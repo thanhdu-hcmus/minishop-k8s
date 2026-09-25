@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+
+.codex/
+.kube/
+.playwright-cli/
+.tools/
+vendor/kuma-demo/kuma-demo-aio.yaml
+plans/
+!docs/
+!docs/decisions/
+!docs/decisions/*.md
+!docs/runtime-validation.md
