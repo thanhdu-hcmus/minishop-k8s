@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-smoke-test
+  namespace: webapp
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-smoke-test
+  namespace: webapp
+spec:
+  restartPolicy: Never
+  containers:
+    - name: consumer
+      image: busybox:1.36.1
+      command: ["sh", "-c", "echo storage-bound; sleep 30"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: storage-smoke-test
+
