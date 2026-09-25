@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-report
+  namespace: webapp
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: report
+              image: postgres:16-alpine
+              command: ["sh", "-c", "psql -Atc 'select count(*) from marketItems' | xargs -I{} echo 'marketItems={}'"]
+              env:
+                - name: PGHOST
+                  value: minishop-postgres-rw.data.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: kumademo
+                - name: PGUSER
+                  value: kumademo
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: postgres-app-creds, key: password}
+
