@@ -1,0 +1,279 @@
+# MiniShop — Kubernetes Learning Platform (On-Prem, Windows)
+### A mini production-style system covering all core K8s concepts
+
+---
+
+## 0. Goals & Constraints
+
+- **Goal:** learn K8s from primitives → production patterns by building one coherent 3-tier web app ("MiniShop") on a real multi-node cluster.
+- **Host:** Windows 11, Intel Core 14th-gen, 32GB RAM, 256GB disk.
+- **Constraints:** free/OSS only, popular/well-documented tools, automated provisioning, fast iteration, lightweight footprint (target ≤10GB RAM peak).
+- **App strategy:** reuse an existing open-source demo app (`kumahq/kuma-demo`'s marketplace app) rather than building frontend/backend from scratch — saves implementation tokens/time, keeps focus on K8s mechanics rather than app code.
+- **Output of this phase:** design doc + implementation plan only. Actual manifest/script authoring is a separate step done by an implementation assistant.
+
+---
+
+## 1. Tech Stack & Rationale
+
+| Concern | Choice | Why this over alternatives |
+|---|---|---|
+| Container runtime | **Docker Desktop (WSL2 backend)** | Best-supported on Windows; free for personal/learning use. |
+| Cluster provisioner | **kind** (Kubernetes IN Docker) | Runs *real* upstream K8s — etcd, kube-apiserver, kube-scheduler, kube-controller-manager appear as actual static pods. Multi-node cluster up in ~60-90s. |
+| **Application source** | **`kumahq/kuma-demo` marketplace app** (Vue frontend + Node/Express backend), pre-built Docker Hub images, **patched, not rebuilt from source** | Closest existing OSS app matching your stack: frontend + backend + Postgres + Redis, in one repo, with working images. See Section 6a for exactly what's kept/stripped/added. |
+| Package manager | **Helm 3** | Industry standard; installs all infra add-ons in one command each. |
+| Env templating (own app) | **Kustomize** | Ships inside `kubectl` (`kubectl apply -k`), zero install. |
+| Ingress controller | **ingress-nginx** | Most widely deployed, official Kind-specific install path. |
+| LoadBalancer impl. | **MetalLB** | Standard way *on-prem* clusters get real `type: LoadBalancer` IPs. |
+| Dynamic storage | **local-path-provisioner** (Rancher) | <50MB, zero-config dynamic PVs. |
+| Database + Operator/CRD | **CloudNativePG (CNPG)** | Popular CNCF-sandbox Postgres operator; one `Cluster` CRD gives primary+replica, failover, backups. Replaces kuma-demo's un-persisted single Postgres Deployment. |
+| Cache (manual StatefulSet) | **Redis**, raw manifests, PVC added | Deliberately kept as a raw StatefulSet (not operator-managed) to contrast with CNPG's abstraction. |
+| Metrics for autoscaling | **metrics-server** | Required by HPA. |
+| Monitoring | **kube-prometheus-stack** | De facto production combo, one Helm install. |
+
+---
+
+## 2. Resource Budget (fits your 32GB / 256GB box)
+
+| Component | Est. RAM |
+|---|---|
+| Docker Desktop/WSL2 base | ~2 GB |
+| kind nodes (1 control-plane + 3 workers) | ~3–4 GB |
+| ingress-nginx | ~100 MB |
+| MetalLB | ~80 MB |
+| metrics-server | ~50 MB |
+| local-path-provisioner | ~30 MB |
+| CloudNativePG operator + Postgres (primary+replica) | ~400 MB |
+| Redis StatefulSet | ~50 MB |
+| kuma-demo frontend (2 replicas) + backend (3 replicas) | ~300 MB |
+| kube-prometheus-stack | ~1.5–2 GB |
+| **Peak total** | **≈ 7–9 GB** |
+
+Recommended Docker Desktop settings: 6 vCPUs, 10–12GB RAM, 80GB disk image size.
+
+---
+
+## 3. High-Level Architecture
+
+```mermaid
+graph TB
+    Browser[("Browser: minishop.local")] -->|hostPort 80/443| CP
+    subgraph "Windows Host — Docker Desktop (WSL2)"
+        subgraph "kind cluster: minishop"
+            CP["control-plane<br/>(etcd, API server,<br/>scheduler, controller-mgr)"]
+            W1["worker: app-1"]
+            W2["worker: app-2"]
+            W3["worker: db-1 (tainted: dedicated=database)"]
+        end
+    end
+    subgraph ns_webapp["ns: webapp"]
+        FE["web-frontend (kuma-demo-fe image)"]
+        BE["api-backend (kuma-demo-be image)"]
+    end
+    subgraph ns_data["ns: data"]
+        PG[(CNPG Postgres Cluster)]
+        RD[(Redis StatefulSet + PVC)]
+    end
+    CP -. schedules .-> W1
+    CP -. schedules .-> W2
+    CP -. schedules .-> W3
+    FE --> BE
+    BE --> PG
+    BE --> RD
+```
+
+---
+
+## 4. Cluster Topology
+
+**`cluster/kind-config.yaml`** (4 nodes total):
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: minishop
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+  - role: worker    # labeled 'workload-type=app' post-create
+  - role: worker    # labeled 'workload-type=app' post-create
+  - role: worker    # labeled 'workload-type=database', tainted, post-create
+```
+
+Post-create labeling/tainting:
+```bash
+kubectl label node minishop-worker  workload-type=app
+kubectl label node minishop-worker2 workload-type=app
+kubectl label node minishop-worker3 workload-type=database
+kubectl taint node minishop-worker3 dedicated=database:NoSchedule
+```
+
+
+### ⚠️ Windows-specific networking gotchas
+
+1. **Browser access:** use `extraPortMappings` + the official [Kind ingress-nginx deploy manifest](https://kind.sigs.k8s.io/docs/user/ingress/). Add `127.0.0.1 minishop.local` to `C:\Windows\System32\drivers\etc\hosts`.
+2. **MetalLB:** used for a *second*, separate `type: LoadBalancer` Service (not ingress-nginx, to avoid port-80 conflict). Verify the assigned IP by curling **from inside WSL2**, not the Windows browser directly. Find the pool range via `docker network inspect kind`.
+3. **metrics-server on Kind:** must set `--kubelet-insecure-tls`, or HPA silently gets no metrics.
+
+---
+
+## 5. Namespace Design
+
+| Namespace | Purpose |
+|---|---|
+| `kube-system` | built-in control plane + CoreDNS, kube-proxy |
+| `ingress-nginx` | ingress controller |
+| `metallb-system` | MetalLB controller + speaker |
+| `cnpg-system` | CloudNativePG operator |
+| `data` | Postgres Cluster (CNPG), Redis StatefulSet |
+| `webapp` | frontend, backend, migration Job, report CronJob |
+| `monitoring` | kube-prometheus-stack |
+
+---
+
+## 6. Application Components ("MiniShop")
+
+### 6a. App Provenance — what's kept / stripped / added from `kuma-demo`
+
+| Item | From upstream `kuma-demo-aio.yaml` | What we do |
+|---|---|---|
+| Frontend image | `kvn0218/kuma-demo-fe:latest`, port 8080, arg `-P <backend-url>` | **Keep image**, pin by digest, point `-P` arg at plain-DNS backend Service |
+| Backend image | `kvn0218/kuma-demo-be:latest`, port 3001 | **Keep image**, pin by digest. **Drop the v1/v2 canary Deployments** (Kuma traffic-routing demo, irrelevant here) — keep only one Deployment, scaled to 3 replicas |
+| Postgres | `kvn0218/postgres:latest`, `emptyDir` volume (⚠️ not persistent) | **Replace** with CloudNativePG `Cluster` CRD + real PVC via `local-path` StorageClass |
+| Redis | `kvn0218/kuma-redis:latest`, no volume | **Keep image**, add a PVC for AOF persistence, deploy as raw StatefulSet (not CNPG-style) |
+| Service discovery | Backend/frontend env vars use Kuma-mesh DNS: `postgres_kuma-demo_svc_5432.mesh`, `REDIS_PORT: "80"` (Envoy sidecar intercept trick) | **Rewrite** to plain k8s DNS + real ports: `POSTGRES_HOST=postgres-rw.data.svc.cluster.local`, `POSTGRES_PORT_NUM=5432`, `REDIS_HOST=redis.data.svc.cluster.local`, `REDIS_PORT=6379` |
+| Probes | None defined | **Add** liveness/readiness probes (see 6b) |
+| Resource limits | Only on Postgres/Redis, not on app pods | **Add** requests/limits on frontend + backend |
+| Namespace/mesh injection | `kuma.io/sidecar-injection: enabled` label, Envoy sidecar containers | **Remove entirely** — no service mesh in this project |
+| Domain model | "items" (catalog) + "reviews" (ratings), no write-heavy order flow | **Conceptual rename only**: treat items as `products`. For a real `orders` concept, add a small custom endpoint (Section 6c) — this is the one piece of actual new code in the whole project, and it's optional/small. |
+
+**Licensing note:** `kuma-demo` and the broader Kuma project are Apache-2.0. The demo images are published under an individual's Docker Hub namespace (`kvn0218`) rather than the `kumahq` org — for a learning project this is fine, but pin images by digest (not `:latest`) so the environment stays reproducible, and note this as a "not fit for real production" caveat if this project is ever shown to others.
+
+### 6b. Component Table
+
+| Component | Kind | Image | Notes |
+|---|---|---|---|
+| `web-frontend` | Deployment, 2 replicas | `kvn0218/kuma-demo-fe` (pinned digest) | Serves the marketplace UI, `-P` arg points at backend Service |
+| `api-backend` | Deployment, 3 replicas | `kvn0218/kuma-demo-be` (pinned digest) | REST API for items/reviews. **Add** `GET /healthz`, `GET /ready` (checks DB+Redis reachability — verify actual paths once image is inspected; fall back to a TCP probe if the image has no such route) |
+| `db-migration-job` | Job | same backend image or a `psql`/`migrate` sidecar image | Ensures schema exists before first backend start |
+| `report-cronjob` | CronJob (every 5 min for demo) | small custom script image (e.g. `postgres:alpine` + `psql` + `redis-cli`) | Reads Postgres/Redis, writes a "sales report" log line |
+| `postgres` | CNPG `Cluster` CRD (1 primary + 1 replica) | CNPG-managed Postgres image | PVC via `local-path`; scheduled only on `workload-type=database` node via nodeAffinity + toleration |
+| `redis-cache` | Manual StatefulSet, 1 replica | `kvn0218/kuma-redis` (pinned digest) | Headless Service, PVC for AOF; same node targeting as Postgres |
+
+**Init container:** `wait-for-postgres` on `api-backend` (netcat/pg_isready loop against `postgres-rw:5432`) before the app container starts.
+
+**Sidecar:** `log-shipper` on `api-backend` — tails a shared `emptyDir` log volume and forwards to stdout (stand-in for Loki/Fluent-bit), demonstrating the shared-volume sidecar pattern.
+
+**Probes:** liveness = process-alive check; readiness = dependency check. Demo: kill DB connectivity → readiness fails (pod pulled from Service endpoints) without a restart, to make the liveness-vs-readiness distinction concrete.
+
+### 6c. Optional stretch: real "orders" endpoint
+
+`kuma-demo`'s backend only has items + reviews. If you want a genuine write-heavy "orders" flow (useful later for HPA load-testing), add a minimal new route to the backend — a POST `/api/orders` that inserts into a new `orders` table via the same Postgres connection the app already has, plus a GET to list them. This is a few dozen lines against an existing Express app, not a new service — worth doing in Phase 3 once the base app is running, not before.
+
+---
+
+## 7. Concept Coverage Matrix
+
+| Category | Concepts | Where it lives in this project |
+|---|---|---|
+| **1. Core Foundation** | Cluster, Node, Pod, Namespace | `kind` 4-node cluster; 7 namespaces |
+| **2. Control Plane** | Scheduler, API Server, Controller Manager | Inspect real static pods in `kube-system` |
+| **3. Workloads** | Deployment, StatefulSet, Jobs, CronJobs | frontend/backend (Deployment, from kuma-demo images), Postgres (CNPG), Redis (StatefulSet), migration (Job), reports (CronJob) |
+| **4. Containers & Health** | Init Containers, Sidecars, Probes | `wait-for-postgres` init container, `log-shipper` sidecar, liveness/readiness on backend (all newly added — upstream has none) |
+| **5. Networking** | Services, Ingress, LoadBalancer | ClusterIP internally, ingress-nginx for routing, MetalLB for LoadBalancer demo |
+| **6. Storage** | PV, PVC, StorageClass | `local-path` StorageClass; PVCs for Postgres + Redis (upstream had neither) |
+| **7. Config & Resources** | ConfigMaps, Secrets, Resource Limits | DB creds/JWT as Secret; requests/limits on all app pods (upstream had none on app pods) |
+| **8. Security** | RBAC, Roles, Service Accounts | `api-backend-sa` + least-privilege `Role`; cross-namespace `ClusterRole`/`RoleBinding` |
+| **9. Scaling** | HPA, VPA, Cluster Autoscaler, taints, tolerations, affinity | HPA on backend (CPU); VPA recommend-only on frontend (stretch); taint/toleration on db node; pod anti-affinity across app nodes |
+| **10. Tools Ecosystem** | kubectl, Helm, Kustomize, CRD, Operator | kubectl throughout; Helm for infra add-ons; Kustomize base+overlays for the app; CNPG `Cluster` CRD as Operator example |
+| **Bonus: Observability** | Monitoring/Logging | kube-prometheus-stack, `ServiceMonitor` on backend, one Grafana dashboard, one alert rule |
+
+**Note on Cluster Autoscaler:** no honest way to run it on a laptop (needs a real cloud API). Document it conceptually; optionally script a manual "add a kind worker node" exercise to simulate the effect.
+
+---
+
+## 8. Build Roadmap (12 phases)
+
+| # | Phase | Key actions | Validate by |
+|---|---|---|---|
+| 0 | Prerequisites | Install WSL2, Docker Desktop, kubectl, kind, helm | all version checks pass |
+| 1 | Cluster foundation | `kind create cluster`; label/taint nodes; create namespaces | `kubectl get nodes -o wide`; control-plane pods visible in `kube-system` |
+| 2 | Storage & config | Install local-path-provisioner; create ConfigMaps/Secrets | test PVC binds instantly |
+| 3 | Adapt & deploy kuma-demo workloads | Pull frontend/backend images; strip Kuma bits from `kuma-demo-aio.yaml`; rewrite service DNS/ports; deploy to `webapp` ns | app responds via port-forward, items visible in UI |
+| 4 | Stateful workloads | Install CNPG operator, apply `Cluster` CRD; apply Redis StatefulSet + PVC; run migration Job | pods in `data` ns; data survives pod deletion |
+| 5 | Health patterns | Add init container + sidecar + probes to backend | readiness fails without restart when DB killed |
+| 6 | Networking | Install ingress-nginx + MetalLB; create Ingress | `curl http://minishop.local` works; MetalLB IP reachable from WSL2 |
+| 7 | Security | ServiceAccounts, Role/RoleBinding, ResourceQuota/LimitRange | `kubectl auth can-i` returns expected result |
+| 8 | Scaling | metrics-server (`--kubelet-insecure-tls`); HPA on backend; taints/tolerations/affinity | `kubectl get hpa -w` shows scale-up under load |
+| 9 | Scheduled work | Deploy report CronJob | `kubectl get cronjob,jobs -n webapp` shows recurring runs |
+| 10 | Observability | kube-prometheus-stack; ServiceMonitor; dashboard; alert | Grafana shows live panel; alert fires on demand |
+| 11 | Tooling polish | Package as Helm chart + Kustomize base/overlays | both produce working deploy |
+| 12 | Chaos/validation (stretch) | Kill pods, drain a node, delete PVC-backed pod, load test | self-healing observed each time |
+
+---
+
+## 9. Repo Structure
+
+```
+minishop-k8s/
+├── cluster/kind-config.yaml
+├── vendor/kuma-demo/                # original kuma-demo-aio.yaml, kept read-only for reference/diffing
+├── charts/minishop/                 # umbrella Helm chart for the app
+│   ├── Chart.yaml
+│   ├── values.yaml / values-dev.yaml / values-prod.yaml
+│   └── templates/
+├── kustomize/
+│   ├── base/
+│   └── overlays/{dev,prod}/
+├── manifests/                       # numbered, per-concept raw YAML for learning
+│   ├── 00-namespaces/ 01-storage/ 02-config-secrets/
+│   ├── 03-workloads/                # adapted kuma-demo frontend+backend Deployments
+│   ├── 04-stateful/                 # CNPG Cluster, Redis StatefulSet+PVC
+│   ├── 05-networking/ 06-security/ 07-scaling/ 08-cronjobs/
+├── infra/                           # Helm values for ingress-nginx, metallb, metrics-server, cnpg, monitoring
+├── scripts/                         # setup.ps1, load-test.sh, validate.sh
+└── docs/                            # this file + implementation plan
+```
+
+—
+
+## 10. Windows Prerequisites (quick install)
+
+```powershell
+wsl --install
+winget install Docker.DockerDesktop
+winget install Kubernetes.kubectl
+winget install Kubernetes.kind
+winget install Helm.Helm
+winget install derailed.k9s   # optional TUI
+```
+
+---
+
+## 11. Definition of Done
+
+- [ ] 4-node kind cluster up, all namespaces created
+- [ ] `minishop.local` loads the kuma-demo frontend in a Windows browser; items load from the backend
+- [ ] Postgres (CNPG) and Redis both persist data across pod deletion (upstream did not persist either)
+- [ ] Deleting a backend pod triggers self-healing within seconds
+- [ ] Killing DB connectivity fails readiness without a restart
+- [ ] Load test triggers HPA scale-up, visible in `kubectl get hpa -w`
+- [ ] `kubectl auth can-i` confirms RBAC least-privilege for `api-backend-sa`
+- [ ] Grafana shows live metrics; one alert fires on demand
+- [ ] Same app deployable via both the Helm chart and Kustomize overlays
+- [ ] MetalLB assigns a real external IP to a LoadBalancer Service, verified via WSL2 curl
+
+---
+
+## 12. Stretch Goals
+
+- Add the custom `/api/orders` endpoint (Section 6c) for a real write-heavy load-test target
+- VPA in `updateMode: Off` on `web-frontend`
+- Loki + Promtail for real log aggregation (replacing the toy sidecar)
+- NetworkPolicy restricting `webapp` → `data` traffic to only `api-backend`
+- Simulated "cluster autoscaler" script that adds a kind worker node under synthetic load
