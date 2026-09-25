@@ -1,0 +1,4 @@
+prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden", justification = "Never rewrite shared history.")
+prefix_rule(pattern = ["git", "push", "-f"], decision = "forbidden", justification = "Never rewrite shared history.")
+prefix_rule(pattern = ["git", "push", "origin", "main"], decision = "forbidden", justification = "Use a reviewed pull request.")
+prefix_rule(pattern = ["git", ["push", "rebase", "commit"]], decision = "prompt", justification = "Review history and network writes.")
