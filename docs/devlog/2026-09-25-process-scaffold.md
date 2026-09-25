@@ -2,13 +2,13 @@
 title: Process scaffold delivery record
 requirement: Issue #1 — process-scaffold delivery workflow
 status: verified
-last_updated: 2026-09-25
+last_updated: 2026-09-26
 issue: "#1"
-pr: pending
+pr: "#2 (draft)"
 tier: T2
 reconstructed: false
 source: ""
-metrics: { wall_time: "N/A", usage: "N/A", review_rounds: 0, ci_failures: 0 }
+metrics: { wall_time: "N/A", usage: "N/A", review_rounds: 0, ci_failures: 4 }
 ---
 
 # Process Scaffold Delivery Record
@@ -55,7 +55,7 @@ git diff --check
 ```
 Expected result: no whitespace errors.
 
-Observed validation for the scaffold: PyYAML syntax checks, staged-diff whitespace, `AGENTS.md` size, Codex Git rules, and Gitleaks passed. Local `yamllint` was not run because `python3-venv` was unavailable; CI will run it. This branch has not yet opened a PR, so CI and GitHub-ruleset enforcement remain unverified. The required T2 independent reviewer findings are also pending before the PR can be ready.
+Draft PR #2 is published. The Conventional Commit check now lints the actual pull-request head range, with a self-contained rule configuration; the push range remains separate. PyYAML, the scaffold commit-lint check, and `git diff --check` passed locally. CI run `36165218460`, job `108171191576`, completed successfully. Four earlier runs failed during scaffold correction: `36162971908` before a job started, `36164296860` on commitlint, and `36164680817` plus `36164996441` on yamllint. GitHub-ruleset enforcement remains unverified. The required T2 independent reviewer findings are also pending before the PR can be ready.
 
 ## Common Pitfalls
 - **Symptom**: local YAML linting is unavailable. Cause: the environment lacks `python3-venv`. Fix: rely on the pinned CI check until the environment is provisioned.
