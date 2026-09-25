@@ -20,11 +20,13 @@ jobs:
       - name: Check Conventional Commits
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
-            commit_range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            commit_range="${{ github.event.pull_request.base.sha }}.."
+            commit_range+="${{ github.event.pull_request.head.sha }}"
           else
             commit_range="${{ github.event.before }}..${{ github.sha }}"
           fi
-          npx --yes @commitlint/cli@19.8.1 --from "${commit_range%%..*}" --to "${commit_range##*..}"
+          npx --yes @commitlint/cli@19.8.1 \
+            --from "${commit_range%%..*}" --to "${commit_range##*..}"
       - name: Check AGENTS.md size
         run: test "$(wc -c < AGENTS.md)" -le 15360
       - name: Lint YAML
@@ -41,7 +43,7 @@ jobs:
           if printf '%s\n' "$PR_LABELS" | grep -q 'trivial'; then exit 0; fi
           if printf '%s\n' "$changed" | grep -qv '^docs/'; then
             if ! printf '%s\n' "$changed" | grep -q '^docs/devlog/'; then
-              echo 'Non-doc changes require a docs/devlog entry or the trivial label.' >&2
+              echo 'Non-doc changes require a devlog entry or trivial label.' >&2
               exit 1
             fi
           fi
