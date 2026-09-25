@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minishop-runtime
+  namespace: webapp
+data:
+  POSTGRES_HOST: minishop-postgres-rw.data.svc.cluster.local
+  POSTGRES_PORT_NUM: "5432"
+  POSTGRES_DB: kumademo
+  POSTGRES_USER: kumademo
+  REDIS_HOST: redis.data.svc.cluster.local
+  REDIS_PORT: "6379"
+

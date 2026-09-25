@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: webapp
+  labels:
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/component: backend
+spec:
+  selector:
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: webapp
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minishop
+        app.kubernetes.io/component: backend
+    spec:
+      serviceAccountName: api-backend-sa
+      nodeSelector:
+        workload-type: app
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: minishop
+                    app.kubernetes.io/component: backend
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-c", "until pg_isready -h minishop-postgres-rw.data.svc.cluster.local -p 5432; do sleep 2; done"]
+      containers:
+        - name: backend
+          image: kvn0218/kuma-demo-be@sha256:2b96a497dfee7e3f1166b89d61e13d46909a75daa19b0f80b705195309e8944a
+          ports:
+            - name: http
+              containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: minishop-runtime
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-app-creds
+                  key: password
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+        - name: postgres-readiness-gate
+          image: postgres:16-alpine
+          command: ["sh", "-c", "sleep infinity"]
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h minishop-postgres-rw.data.svc.cluster.local -p 5432"]
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 50m, memory: 64Mi}
+        - name: redis-readiness-gate
+          image: kvn0218/kuma-redis@sha256:23fb64fd5bfb76d0e90387efb467626d73fb55d66a8e86e7196d894659eaf13d
+          command: ["sh", "-c", "sleep infinity"]
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -h redis.data.svc.cluster.local -p 6379 ping | grep PONG"]
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 50m, memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: webapp
+  labels:
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/component: frontend
+spec:
+  selector:
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: webapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minishop
+        app.kubernetes.io/component: frontend
+    spec:
+      nodeSelector:
+        workload-type: app
+      containers:
+        - name: frontend
+          image: kvn0218/kuma-demo-fe@sha256:e72c87263cc19bc7ea9d04978f6601d9adab01e9fc5a642219c206f154f9eb48
+          args: ["-P", "http://backend.webapp.svc.cluster.local:3001"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket: {port: http}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration
+  namespace: webapp
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: postgres:16-alpine
+          command: ["sh", "-c", "psql -v ON_ERROR_STOP=1 -f /schema/database.sql"]
+          envFrom:
+            - configMapRef: {name: minishop-runtime}
+          env:
+            - name: PGHOST
+              value: minishop-postgres-rw.data.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: kumademo
+            - name: PGUSER
+              value: kumademo
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-app-creds, key: password}
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+      volumes:
+        - name: schema
+          configMap:
+            name: minishop-postgres-schema
