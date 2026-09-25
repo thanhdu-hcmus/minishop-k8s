@@ -32,13 +32,12 @@ jobs:
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
-          if printf '%s
-' "$PR_LABELS" | grep -q 'trivial'; then exit 0; fi
-          if printf '%s
-' "$changed" | grep -qv '^docs/' && ! printf '%s
-' "$changed" | grep -q '^docs/devlog/'; then
-            echo 'Non-doc changes require a docs/devlog entry or the trivial label.' >&2
-            exit 1
+          if printf '%s\n' "$PR_LABELS" | grep -q 'trivial'; then exit 0; fi
+          if printf '%s\n' "$changed" | grep -qv '^docs/'; then
+            if ! printf '%s\n' "$changed" | grep -q '^docs/devlog/'; then
+              echo 'Non-doc changes require a docs/devlog entry or the trivial label.' >&2
+              exit 1
+            fi
           fi
       - name: Scan for secrets
         uses: gitleaks/gitleaks-action@v2.3.9
