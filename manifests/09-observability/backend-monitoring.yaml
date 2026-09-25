@@ -1,0 +1,66 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [webapp]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: minishop-backend
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: minishop
+      rules:
+        - alert: MiniShopBackendRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="webapp",container="backend"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: MiniShop backend restarted
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minishop-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  minishop-backend.json: |
+    {
+      "uid": "minishop-backend",
+      "title": "MiniShop Backend",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "id": 1,
+          "title": "Backend CPU cores",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"webapp\",container=\"backend\",image!=\"\"}[5m]))",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }
