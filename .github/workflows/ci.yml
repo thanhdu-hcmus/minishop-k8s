@@ -43,7 +43,7 @@ jobs:
           if printf '%s\n' "$PR_LABELS" | grep -q 'trivial'; then exit 0; fi
           if printf '%s\n' "$changed" | grep -qv '^docs/'; then
             if ! printf '%s\n' "$changed" | grep -q '^docs/devlog/'; then
-              echo 'Non-doc changes require a devlog entry or trivial label.' >&2
+              echo 'Non-doc changes need a devlog entry or trivial label.' >&2
               exit 1
             fi
           fi
