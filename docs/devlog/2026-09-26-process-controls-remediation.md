@@ -6,10 +6,10 @@ last_updated: 2026-09-26
 date: 2026-09-26
 issue: "#3"
 pr: "#6 (draft)"
-tier: T1
+tier: T2
 reconstructed: false
 source: ""
-metrics: { wall_time: "N/A", usage: "N/A", review_rounds: 1, ci_failures: 2 }
+metrics: { wall_time: "N/A", usage: "N/A", review_rounds: 1, ci_failures: 6 }
 ---
 
 # Process-Controls Remediation Record
@@ -51,9 +51,9 @@ flowchart LR
 ```bash
 # GitHub Actions runs the authoritative full workflow on PR #6.
 ```
-Expected result: the `ci` check succeeds; the manifest and script steps exit successfully when no matching paths changed.
+Expected result: the `ci` check succeeds. When no matching target paths changed, the manifest and script steps exit before invoking their external linters.
 
-DevOps validation passed: PyYAML, `bash -n` for each run script, and the 80-column check. GitHub Actions run `36254698024` then completed the full `ci` job successfully, including the manifest, script, devlog, and secret-scan steps.
+DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column check, and selector tests. PowerShell was unavailable locally. GitHub Actions run `36255297615` completed the full `ci` job successfully. This control-only PR changed no manifest or script target files, so the manifest and script steps exited early and did not exercise kubeconform, shellcheck, or PSScriptAnalyzer.
 
 ## Common Pitfalls
 - **Symptom**: a label containing the word `trivial` bypasses the devlog rule. Cause: substring matching. Fix: parse labels as JSON and require an exact `trivial` value.
@@ -74,7 +74,7 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, and the 80-colu
 - Exact `trivial` label matching, scoped manifest and script checks, stricter commitlint rules, and expanded CODEOWNERS coverage.
 
 ## Decisions
-- Remediate the merged scaffold in a focused follow-up rather than rewrite its history → [process scaffold baseline](../decisions/0001-process-scaffold-baseline.md).
+- Remediate the merged scaffold in a focused follow-up rather than rewrite its history → [ADR 0002](../decisions/0002-process-controls-remediation.md).
 
 ## Problems encountered
 ### Commitlint rule exercise
@@ -90,13 +90,17 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, and the 80-colu
 - **Root cause:** `rg` is not a guaranteed GitHub-hosted runner dependency.
 - **Tried:** The first workflow version used `rg` for changed-path filtering.
 - **Fix:** Replaced it with portable `grep -E`.
-- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36254698024` completed successfully.
+- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36255297615` completed successfully.
 - **Promoted to troubleshooting/AGENTS.md?** yes/troubleshooting; no/AGENTS.md
 
 ## Verification evidence
 ```bash
-# DevOps validation: PyYAML, bash -n for each run script, and 80-column check passed.
-# GitHub Actions: run 36254698024 completed the full ci job successfully.
+# Six branch runs failed before the final repair: 36254259720, 36254477858,
+# 36254526780, 36254551299, 36254565578, and 36254827482.
+# DevOps validation: PyYAML, bash -n for each run script, 80-column check,
+# and selector tests passed; pwsh was unavailable locally.
+# GitHub Actions: run 36255297615 completed ci successfully. No manifest or
+# script target paths changed, so their external linters were not exercised.
 ```
 
 ## Follow-ups
