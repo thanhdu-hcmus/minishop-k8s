@@ -45,7 +45,7 @@ flowchart LR
 # Open the failed `ci` run and identify whether a job was created.
 # Read the named failed step before changing the workflow.
 ```
-Expected result: the diagnosis identifies the failing layer and the next run advances beyond that layer. The repaired remediation workflow completed successfully in GitHub Actions run `36255708939`.
+Expected result: the diagnosis identifies the failing layer and the next run advances beyond that layer. The clean-history remediation PR #7 completed successfully in GitHub Actions run `36256218460`; the earlier PR #6 run remains historical troubleshooting evidence.
 
 ## Common Pitfalls
 - **Symptom:** A workflow run fails before any job begins. **Cause:** workflow YAML or expression syntax is invalid. **Fix:** correct the reported line, then confirm the next run creates `ci`.
