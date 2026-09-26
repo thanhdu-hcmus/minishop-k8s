@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+# shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
 for command_name in docker kind kubectl; do
