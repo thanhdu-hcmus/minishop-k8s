@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+
+.kube/
+.playwright-cli/
+.tools/
