@@ -93,8 +93,13 @@ jobs:
               Install-Module @moduleParams
               $paths = $env:PS_SCRIPT_PATHS -split [Environment]::NewLine |
                 Where-Object { $_ }
+              $findings = @()
               foreach ($path in $paths) {
-                Invoke-ScriptAnalyzer -Path $path -Severity Error -EnableExit
+                $findings += Invoke-ScriptAnalyzer -Path $path -Severity Error
+              }
+              $findings | Format-Table -AutoSize
+              if ($findings.Count -gt 0) {
+                exit 1
               }
             '
           fi
