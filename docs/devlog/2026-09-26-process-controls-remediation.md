@@ -9,7 +9,7 @@ pr: "#7 (draft; supersedes #6)"
 tier: T2
 reconstructed: false
 source: ""
-metrics: { wall_time: "N/A", usage: "N/A", review_rounds: 1, ci_failures: 6 }
+metrics: { wall_time: "N/A", usage: "N/A", review_rounds: 1, ci_failures: 2 }
 ---
 
 # Process-Controls Remediation Record
@@ -93,15 +93,25 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column c
 - **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36255708939` completed successfully before PR #6 was superseded by clean-history PR #7, whose run `36256218460` completed successfully.
 - **Promoted to troubleshooting/AGENTS.md?** yes/troubleshooting; no/AGENTS.md
 
+
+### Rapid documentation-push revision race
+- **Symptom:** PR #7 runs `36256327131` and `36256333003` failed in the secret scan with an invalid revision range.
+- **Root cause:** Rapid documentation pushes advanced the pull-request head while earlier runs were still resolving their revision range.
+- **Tried:** Allowed the branch head to settle and inspected the affected run metadata.
+- **Fix:** Publish the remaining documentation correction as one focused commit rather than a series of rapid commits.
+- **Verified by:** The settled PR #7 head completed run `36256345804` successfully before this correction.
+- **Promoted to troubleshooting/AGENTS.md?** no
+
 ## Verification evidence
 ```bash
 # Six branch runs failed before the final repair: 36254259720, 36254477858,
 # 36254526780, 36254551299, 36254565578, and 36254827482.
 # DevOps validation: PyYAML, bash -n for each run script, 80-column check,
 # and selector tests passed; pwsh was unavailable locally.
-# PR #6 historical evidence: run 36255708939 completed ci successfully.
-# Clean-history PR #7: run 36256218460 completed ci successfully. No manifest
-# or script target paths changed, so their external linters were not exercised.
+# PR #6 historical evidence: six failures before the final repair; run 36255708939 succeeded.
+# PR #7: runs 36256327131 and 36256333003 failed during rapid docs pushes with
+# an invalid revision range; settled-head run 36256345804 succeeded.
+# Run 36256218460 also succeeded. No manifest or script target paths changed.
 ```
 
 ## Follow-ups
