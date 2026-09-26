@@ -12,4 +12,6 @@ also requires an ADR, an owner scope sign-off, and reviewer findings before the 
 
 Before publishing a PR, run the relevant validation, check for secrets, and state commands and
 results in the PR body. Handle review feedback in commits, then tidy fixups once the owner says
-the content is settled. The owner reviews and rebase-merges approved PRs.
+the content is settled. After validation and all required T1/T2 handoffs, the agent sets the PR
+ready for review and requests review from `thanhdu-hcmus` before asking the owner to merge. The
+owner reviews and rebase-merges approved PRs.
