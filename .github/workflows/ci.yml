@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
+
       - name: Check Conventional Commits
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
@@ -27,12 +28,67 @@ jobs:
           fi
           npx --yes @commitlint/cli@19.8.1 \
             --from "${commit_range%%..*}" --to "${commit_range##*..}"
+
       - name: Check AGENTS.md size
         run: test "$(wc -c < AGENTS.md)" -le 15360
+
       - name: Lint YAML
         run: |
           python3 -m pip install --disable-pip-version-check yamllint==1.35.1
           yamllint .github
+
+      - name: Validate changed Kubernetes manifests
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+          fi
+          manifest_files=()
+          while IFS= read -r path; do
+            manifest_files+=("/work/$path")
+          done < <(
+            git diff --name-only "$base_sha" HEAD -- manifests kustomize |
+              rg '\.ya?ml$' || true
+          )
+          if [ "${#manifest_files[@]}" -eq 0 ]; then
+            exit 0
+          fi
+          docker run --rm -v "$GITHUB_WORKSPACE:/work:ro" \
+            ghcr.io/yannh/kubeconform:v0.6.7 \
+            -summary -strict -ignore-missing-schemas "${manifest_files[@]}"
+
+      - name: Lint changed scripts
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+          fi
+          shell_files=()
+          powershell_files=()
+          while IFS= read -r path; do
+            case "$path" in
+              *.sh) shell_files+=("$path") ;;
+              *.ps1) powershell_files+=("$path") ;;
+            esac
+          done < <(git diff --name-only "$base_sha" HEAD -- scripts || true)
+          if [ "${#shell_files[@]}" -gt 0 ]; then
+            shellcheck "${shell_files[@]}"
+          fi
+          if [ "${#powershell_files[@]}" -gt 0 ]; then
+            export PS_SCRIPT_PATHS
+            PS_SCRIPT_PATHS="$(printf '%s\n' "${powershell_files[@]}")"
+            pwsh -NoProfile -Command '
+              Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+              Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.24.0 \
+                -Scope CurrentUser -Force
+              $paths = $env:PS_SCRIPT_PATHS -split [Environment]::NewLine |
+                Where-Object { $_ }
+              Invoke-ScriptAnalyzer -Path $paths -Severity Error
+            '
+          fi
+
       - name: Check devlog requirement
         if: github.event_name == 'pull_request'
         env:
@@ -40,13 +96,16 @@ jobs:
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
-          if printf '%s\n' "$PR_LABELS" | grep -q 'trivial'; then exit 0; fi
+          if jq -e 'index("trivial") != null' <<< "$PR_LABELS" >/dev/null; then
+            exit 0
+          fi
           if printf '%s\n' "$changed" | grep -qv '^docs/'; then
             if ! printf '%s\n' "$changed" | grep -q '^docs/devlog/'; then
               echo 'Non-doc changes need a devlog entry or trivial label.' >&2
               exit 1
             fi
           fi
+
       - name: Scan for secrets
         uses: gitleaks/gitleaks-action@v2.3.9
         env:
