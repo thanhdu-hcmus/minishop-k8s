@@ -44,9 +44,9 @@ flowchart LR
 
 ## Run & Verify
 ~~~bash
-# Review GitHub Actions run 36255297615 on PR #6.
+# Review GitHub Actions run 36255708939 on PR #6.
 ~~~
-Expected result: the ci job succeeds. This run succeeded, while kubeconform, shellcheck, and PSScriptAnalyzer were not invoked because no matching target files changed.
+Expected result: the ci job succeeds. This run succeeded, while kubeconform, shellcheck, and PSScriptAnalyzer were not invoked because no matching target files changed. When PowerShell targets exist, the workflow collects findings for every target before returning failure.
 
 ## Common Pitfalls
 - **Symptom:** A green control-only PR is treated as proof that every path-scoped linter works. **Cause:** no governed files changed. **Fix:** record the skipped targets and exercise each linter in a later relevant PR.
