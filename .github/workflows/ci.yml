@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -48,8 +49,8 @@ jobs:
           while IFS= read -r path; do
             manifest_files+=("/work/$path")
           done < <(
-            git diff --name-only "$base_sha" HEAD -- manifests kustomize |
-              grep -E '\\.ya?ml$' || true
+            git diff --name-only --diff-filter=ACMR "$base_sha" HEAD -- \
+              manifests kustomize | grep -E '\.ya?ml$' || true
           )
           if [ "${#manifest_files[@]}" -eq 0 ]; then
             exit 0
@@ -72,7 +73,9 @@ jobs:
               *.sh) shell_files+=("$path") ;;
               *.ps1) powershell_files+=("$path") ;;
             esac
-          done < <(git diff --name-only "$base_sha" HEAD -- scripts || true)
+          done < <(
+            git diff --name-only --diff-filter=ACMR "$base_sha" HEAD -- scripts
+          )
           if [ "${#shell_files[@]}" -gt 0 ]; then
             shellcheck "${shell_files[@]}"
           fi
@@ -81,11 +84,18 @@ jobs:
             PS_SCRIPT_PATHS="$(printf '%s\n' "${powershell_files[@]}")"
             pwsh -NoProfile -Command '
               Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-              Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.24.0 \
-                -Scope CurrentUser -Force
+              $moduleParams = @{
+                Name = 'PSScriptAnalyzer'
+                RequiredVersion = '1.24.0'
+                Scope = 'CurrentUser'
+                Force = $true
+              }
+              Install-Module @moduleParams
               $paths = $env:PS_SCRIPT_PATHS -split [Environment]::NewLine |
                 Where-Object { $_ }
-              Invoke-ScriptAnalyzer -Path $paths -Severity Error
+              foreach ($path in $paths) {
+                Invoke-ScriptAnalyzer -Path $path -Severity Error -EnableExit
+              }
             '
           fi
 
