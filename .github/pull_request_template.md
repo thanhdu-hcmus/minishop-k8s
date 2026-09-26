@@ -25,3 +25,8 @@ None. Full detail belongs in `docs/devlog/` when applicable.
 - [ ] Atomic Conventional Commits
 - [ ] No secrets, `.env`, or kubeconfig
 - [ ] `AGENTS.md` change has an AGM-05 trigger
+
+## Agent invocation log (for cost tracking)
+- devops runs:
+- doc-writer runs:
+- reviewer runs:

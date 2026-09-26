@@ -10,6 +10,12 @@ push shared branches. The agent never merges PRs.
 T0 work uses a `trivial` label. T1 and T2 work require a devlog entry and the PR template. T2
 also requires an ADR, an owner scope sign-off, and reviewer findings before the PR is ready.
 
+For each linked Issue, the DevOps agent works until every acceptance criterion is addressed, all
+commits validate, no subtasks remain, and it reports `IMPLEMENTATION COMPLETE`. Only then does
+one doc-writer handoff document the completed state. T2 and pilot changes receive one reviewer
+handoff after documentation; a blocker remediation receives at most one delta review. Record the
+DevOps, doc-writer, and reviewer invocation counts in the PR template.
+
 Before publishing a PR, run the relevant validation, check for secrets, and state commands and
 results in the PR body. Handle review feedback in commits, then tidy fixups once the owner says
 the content is settled. After validation and all required T1/T2 handoffs, the agent sets the PR
