@@ -64,4 +64,4 @@ The process scaffold’s local validation passed: YAML syntax, staged-diff white
 
 ## Related Docs
 - Previous: N/A
-- Next: [Git workflow](../process/git-workflow.md)
+- Next: [Process-controls remediation decision](0002-process-controls-remediation.md)
