@@ -1,7 +1,7 @@
 ---
 title: Process-controls remediation record
 requirement: Issue #3 — remediate process-control gaps
-status: draft
+status: verified
 last_updated: 2026-09-26
 date: 2026-09-26
 issue: "#3"
@@ -53,7 +53,7 @@ flowchart LR
 ```
 Expected result: the `ci` check succeeds; the manifest and script steps exit successfully when no matching paths changed.
 
-DevOps validation of the non-document changes passed. The full CI result for PR #6 is pending while this documentation is added.
+DevOps validation passed: PyYAML, `bash -n` for each run script, and the 80-column check. GitHub Actions run `36254698024` then completed the full `ci` job successfully, including the manifest, script, devlog, and secret-scan steps.
 
 ## Common Pitfalls
 - **Symptom**: a label containing the word `trivial` bypasses the devlog rule. Cause: substring matching. Fix: parse labels as JSON and require an exact `trivial` value.
@@ -90,15 +90,15 @@ DevOps validation of the non-document changes passed. The full CI result for PR 
 - **Root cause:** `rg` is not a guaranteed GitHub-hosted runner dependency.
 - **Tried:** The first workflow version used `rg` for changed-path filtering.
 - **Fix:** Replaced it with portable `grep -E`.
-- **Verified by:** The final PR branch contains `grep -E`; full PR #6 CI remains pending.
+- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36254698024` completed successfully.
 - **Promoted to troubleshooting/AGENTS.md?** yes/troubleshooting; no/AGENTS.md
 
 ## Verification evidence
 ```bash
-# DevOps validation: non-document process-control changes passed.
-# PR #6 CI: pending after documentation update.
+# DevOps validation: PyYAML, bash -n for each run script, and 80-column check passed.
+# GitHub Actions: run 36254698024 completed the full ci job successfully.
 ```
 
 ## Follow-ups
 - [Issue #3](https://github.com/thanhdu-hcmus/minishop-k8s/issues/3)
-- Review the `ci` result before marking PR #6 ready.
+- The owner must complete review before marking PR #6 ready or merging it.
