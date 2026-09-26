@@ -74,8 +74,8 @@ The T2 storage decision is recorded in
 - **Symptom:** No documented HTTP or TCP health endpoint was available for the
   provisioner.
 - **Root cause:** Not recorded.
-- **Fix:** Used Kubernetes rollout availability and restart behavior rather
-  than an unsupported probe.
+- **Fix:** Used Kubernetes rollout availability rather than an unsupported
+  probe.
 - **Verified by:** The provisioner rollout completed.
 
 ## Verification evidence
