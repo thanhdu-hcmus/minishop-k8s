@@ -5,7 +5,7 @@ status: verified
 last_updated: 2026-09-26
 date: 2026-09-26
 issue: "#3"
-pr: "#6 (draft)"
+pr: "#7 (draft; supersedes #6)"
 tier: T2
 reconstructed: false
 source: ""
@@ -49,11 +49,11 @@ flowchart LR
 
 ## Run & Verify
 ```bash
-# GitHub Actions runs the authoritative full workflow on PR #6.
+# GitHub Actions runs the authoritative full workflow on PR #7.
 ```
 Expected result: the `ci` check succeeds. When no matching target paths changed, the manifest and script steps exit before invoking their external linters.
 
-DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column check, and selector tests. PowerShell was unavailable locally. GitHub Actions run `36255708939` completed the full `ci` job successfully. This control-only PR changed no manifest or script target files, so the manifest and script steps exited early and did not exercise kubeconform, shellcheck, or PSScriptAnalyzer.
+DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column check, and selector tests. PowerShell was unavailable locally. The prior PR #6 workflow run `36255708939` completed successfully. PR #7 is the clean-history replacement: its own run `36256218460` completed successfully. This control-only PR changed no manifest or script target files, so the manifest and script steps exited early and did not exercise kubeconform, shellcheck, or PSScriptAnalyzer.
 
 ## Common Pitfalls
 - **Symptom**: a label containing the word `trivial` bypasses the devlog rule. Cause: substring matching. Fix: parse labels as JSON and require an exact `trivial` value.
@@ -90,7 +90,7 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column c
 - **Root cause:** `rg` is not a guaranteed GitHub-hosted runner dependency.
 - **Tried:** The first workflow version used `rg` for changed-path filtering.
 - **Fix:** Replaced it with portable `grep -E`.
-- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36255708939` completed successfully.
+- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36255708939` completed successfully before PR #6 was superseded by clean-history PR #7, whose run `36256218460` completed successfully.
 - **Promoted to troubleshooting/AGENTS.md?** yes/troubleshooting; no/AGENTS.md
 
 ## Verification evidence
@@ -99,10 +99,12 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column c
 # 36254526780, 36254551299, 36254565578, and 36254827482.
 # DevOps validation: PyYAML, bash -n for each run script, 80-column check,
 # and selector tests passed; pwsh was unavailable locally.
-# GitHub Actions: run 36255708939 completed ci successfully. No manifest or
-# script target paths changed, so their external linters were not exercised.
+# PR #6 historical evidence: run 36255708939 completed ci successfully.
+# Clean-history PR #7: run 36256218460 completed ci successfully. No manifest
+# or script target paths changed, so their external linters were not exercised.
 ```
 
 ## Follow-ups
 - [Issue #3](https://github.com/thanhdu-hcmus/minishop-k8s/issues/3)
-- The owner must complete review before marking PR #6 ready or merging it.
+- The owner must complete review before marking PR #7 ready or merging it.
+- Draft PR #6 is superseded; its CI history remains retained as evidence.
