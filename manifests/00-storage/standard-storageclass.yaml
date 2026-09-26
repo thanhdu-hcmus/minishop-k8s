@@ -1,0 +1,11 @@
+# Kind’s standard class uses the local-path provisioner.
+# Keep it as the only default so PVCs resolve deterministically.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
