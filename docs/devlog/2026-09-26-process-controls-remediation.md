@@ -41,7 +41,7 @@ flowchart LR
 ## Implementation Walkthrough
 1. **Tighten process controls**: require a commit scope, lower-case summary, and no trailing period; match the `trivial` label through JSON parsing; and add path-scoped kubeconform, shellcheck, and PSScriptAnalyzer checks.
    - File(s): `.commitlintrc.json`, `.github/workflows/ci.yml`
-   - Kubeconform is pinned to `v0.6.7`; PSScriptAnalyzer is pinned to `1.24.0`.
+   - Kubeconform is pinned to `v0.6.7`; PSScriptAnalyzer is pinned to `1.24.0` and collects findings for every changed PowerShell script before failing the step.
 2. **Complete ownership coverage**: assign process-control files and agent instructions to the repository owner.
    - File(s): `.github/CODEOWNERS`
 3. **Preserve audit evidence**: record the remediation and link the retrospective scaffold review.
@@ -53,7 +53,7 @@ flowchart LR
 ```
 Expected result: the `ci` check succeeds. When no matching target paths changed, the manifest and script steps exit before invoking their external linters.
 
-DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column check, and selector tests. PowerShell was unavailable locally. GitHub Actions run `36255297615` completed the full `ci` job successfully. This control-only PR changed no manifest or script target files, so the manifest and script steps exited early and did not exercise kubeconform, shellcheck, or PSScriptAnalyzer.
+DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column check, and selector tests. PowerShell was unavailable locally. GitHub Actions run `36255708939` completed the full `ci` job successfully. This control-only PR changed no manifest or script target files, so the manifest and script steps exited early and did not exercise kubeconform, shellcheck, or PSScriptAnalyzer.
 
 ## Common Pitfalls
 - **Symptom**: a label containing the word `trivial` bypasses the devlog rule. Cause: substring matching. Fix: parse labels as JSON and require an exact `trivial` value.
@@ -90,7 +90,7 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column c
 - **Root cause:** `rg` is not a guaranteed GitHub-hosted runner dependency.
 - **Tried:** The first workflow version used `rg` for changed-path filtering.
 - **Fix:** Replaced it with portable `grep -E`.
-- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36255297615` completed successfully.
+- **Verified by:** The final PR branch contains `grep -E`; GitHub Actions run `36255708939` completed successfully.
 - **Promoted to troubleshooting/AGENTS.md?** yes/troubleshooting; no/AGENTS.md
 
 ## Verification evidence
@@ -99,7 +99,7 @@ DevOps validation passed: PyYAML, `bash -n` for each run script, the 80-column c
 # 36254526780, 36254551299, 36254565578, and 36254827482.
 # DevOps validation: PyYAML, bash -n for each run script, 80-column check,
 # and selector tests passed; pwsh was unavailable locally.
-# GitHub Actions: run 36255297615 completed ci successfully. No manifest or
+# GitHub Actions: run 36255708939 completed ci successfully. No manifest or
 # script target paths changed, so their external linters were not exercised.
 ```
 
