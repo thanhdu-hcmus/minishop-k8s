@@ -41,3 +41,35 @@ verifiable, and scoped to the linked Issue.
 - Run relevant validation and record its result.
 - Hand implementation to `doc-writer`; use `reviewer` for T2 and pilot work.
 - Leave the PR unmerged for owner review.
+
+## Requirement Workflow
+
+For each linked Issue, run this pipeline exactly once per PR:
+
+1. Spawn `devops`. It works until ALL of these are true, then stops and reports
+   "IMPLEMENTATION COMPLETE":
+   - Every acceptance criterion in the Issue is addressed.
+   - All commits validate (dry-run/lint/parse all pass).
+   - No further subtasks remain for this Issue.
+   Until that signal appears, do not spawn doc-writer or reviewer — devops may
+   run multiple turns/commits on its own; that is not a trigger for anything else.
+
+2. Only after "IMPLEMENTATION COMPLETE": spawn `doc-writer` ONCE. Pass it the
+   Issue, devops's final summary, and the full diff. It documents the finished
+   state, not intermediate steps.
+
+3. Only for T2 or pilot-tier changes: spawn `reviewer` ONCE, after doc-writer
+   finishes, so it reviews code + docs together.
+
+4. If `reviewer` returns Blockers: spawn `devops` again to fix ALL of them in
+   one pass (batch the fixes, don't loop per-finding). When it reports complete
+   again, spawn `reviewer` ONCE more for a delta check — give it only the new
+   commits and the blocker list, not a full re-review. If it now says
+   "no findings" or only Nits, stop; do not loop further without owner input.
+   After 2 reviewer passes, stop and hand control back to the owner regardless
+   of outcome.
+
+5. If reviewer found nothing (T1 or T0), do not spawn it again for this PR.
+
+Never invoke doc-writer or reviewer speculatively, "just in case," or more than
+the counts above without the owner asking.
