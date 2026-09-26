@@ -2,7 +2,7 @@
 title: CI troubleshooting
 requirement: DOC-03 — curate instructive process failures
 status: verified
-last_updated: 2026-09-26
+last_updated: 2026-09-27
 ---
 
 # CI Troubleshooting
@@ -20,6 +20,7 @@ Provide durable symptom-to-fix guidance for the process-scaffold failures that f
 | Job creation | A workflow syntax failure can stop GitHub Actions before any job exists. |
 | Synthetic merge commit | GitHub can create a temporary merge ref for a PR; commitlint should check the actual branch commits instead. |
 | Hosted runner | A runner image is not a contract that every convenience tool is installed. |
+| Git ref write denial | A filesystem sandbox can block local branch creation even when the repository worktree is writable. |
 
 ## Architecture / Flow
 A pull request first loads its workflow, then starts the `ci` job, then runs each validation step.
@@ -28,8 +29,8 @@ A pull request first loads its workflow, then starts the `ci` job, then runs eac
 flowchart LR
   A[Workflow syntax] --> B[CI job starts]
   B --> C[Commit and YAML checks]
-  C --> D[Path-scoped checks]
-  D --> E[Devlog and secret checks]
+  B --> D[Path-scoped checks]
+  B --> E[Devlog and secret checks]
 ```
 
 ## Implementation Walkthrough
@@ -52,6 +53,7 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** Commitlint reports `empty-rules`. **Cause:** the CLI has no repository rule configuration. **Fix:** add and version a commitlint configuration, then lint the actual PR commit range.
 - **Symptom:** Yamllint reports document-start, truthy-key, or line-length violations. **Cause:** the workflow does not meet the repository’s lint policy. **Fix:** make the YAML conform exactly and rerun the pinned linter.
 - **Symptom:** CI cannot find `rg`. **Cause:** ripgrep is not guaranteed on a hosted runner. **Fix:** use `grep -E` for this simple changed-path filter or provision the dependency explicitly.
+- **Symptom:** A local Git branch command reports a read-only ref filesystem. **Cause:** not recorded; the command could not write under `.git/refs`. **Fix:** report the exact command and obtain owner authorization before using an approved remote fallback; do not bypass the denial.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
@@ -62,4 +64,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 
 ## Related Docs
 - Previous: [Process-controls remediation record](./devlog/2026-09-26-process-controls-remediation.md)
-- Next: N/A
+- Next: [Agent workflow governance](./devlog/2026-09-27-agent-workflow-governance.md)
