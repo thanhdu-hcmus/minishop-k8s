@@ -1,7 +1,7 @@
 ---
 title: CI troubleshooting
 requirement: DOC-03 — curate instructive process failures
-status: draft
+status: verified
 last_updated: 2026-09-26
 ---
 
@@ -45,7 +45,7 @@ flowchart LR
 # Open the failed `ci` run and identify whether a job was created.
 # Read the named failed step before changing the workflow.
 ```
-Expected result: the diagnosis identifies the failing layer and the next run advances beyond that layer.
+Expected result: the diagnosis identifies the failing layer and the next run advances beyond that layer. The repaired remediation workflow completed successfully in GitHub Actions run `36254698024`.
 
 ## Common Pitfalls
 - **Symptom:** A workflow run fails before any job begins. **Cause:** workflow YAML or expression syntax is invalid. **Fix:** correct the reported line, then confirm the next run creates `ci`.
