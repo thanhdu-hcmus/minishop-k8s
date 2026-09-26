@@ -83,6 +83,7 @@ jobs:
             export PS_SCRIPT_PATHS
             PS_SCRIPT_PATHS="$(printf '%s\n' "${powershell_files[@]}")"
             pwsh -NoProfile -Command '
+              $ErrorActionPreference = "Stop"
               Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
               $moduleParams = @{
                 Name = 'PSScriptAnalyzer'
