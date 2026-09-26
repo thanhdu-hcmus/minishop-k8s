@@ -38,14 +38,14 @@ flowchart LR
    - A run with no job generally indicates a workflow-loading issue rather than a failed step.
 2. **Use portable, pinned checks**: configuration belongs in the repository; runner tools are used only when explicitly available.
    - File(s): `.commitlintrc.json`, `.github/workflows/ci.yml`
-   - The remediation pins kubeconform and PSScriptAnalyzer and replaces `rg` with `grep -E`.
+   - The remediation pins kubeconform and PSScriptAnalyzer, collects PowerShell findings before failing, and replaces `rg` with `grep -E`.
 
 ## Run & Verify
 ```bash
 # Open the failed `ci` run and identify whether a job was created.
 # Read the named failed step before changing the workflow.
 ```
-Expected result: the diagnosis identifies the failing layer and the next run advances beyond that layer. The repaired remediation workflow completed successfully in GitHub Actions run `36254698024`.
+Expected result: the diagnosis identifies the failing layer and the next run advances beyond that layer. The repaired remediation workflow completed successfully in GitHub Actions run `36255708939`.
 
 ## Common Pitfalls
 - **Symptom:** A workflow run fails before any job begins. **Cause:** workflow YAML or expression syntax is invalid. **Fix:** correct the reported line, then confirm the next run creates `ci`.
