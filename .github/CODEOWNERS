@@ -1,5 +1,8 @@
 # The owner reviews every process-control change.
 /AGENTS.md @thanhdu-hcmus
+/.agents/ @thanhdu-hcmus
 /.codex/ @thanhdu-hcmus
+/.commitlintrc.json @thanhdu-hcmus
 /.github/ @thanhdu-hcmus
+/.yamllint.yml @thanhdu-hcmus
 /docs/process/ @thanhdu-hcmus
