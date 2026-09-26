@@ -113,7 +113,7 @@ PyYAML, the scaffold commitlint check, and `git diff --check` passed locally. CI
 - **Root cause:** The required T2 reviewer pass and merge-readiness gate were not completed before the owner merged the scaffold.
 - **Tried:** Audited the merged controls and assessed whether history should be rewritten.
 - **Fix:** The owner approved a focused forward-only remediation in Issue #3 and Draft PR #6.
-- **Verified by:** PR #6 contains the requested control changes; its full CI result is pending.
+- **Verified by:** PR #6 contains the requested control changes; GitHub Actions run `36254698024` completed successfully.
 - **Promoted to troubleshooting/AGENTS.md?** no
 
 ## Verification evidence
@@ -121,7 +121,7 @@ PyYAML, the scaffold commitlint check, and `git diff --check` passed locally. CI
 # Local: PyYAML, scaffold commitlint check, and git diff --check passed.
 # CI: run 36162971908 failed before jobs; 36164296860 failed commitlint;
 # 36164680817 and 36164996441 failed yamllint; 36165218460 succeeded.
-# T2 audit: Issue #3 and Draft PR #6 created for forward-only remediation.
+# T2 audit: Issue #3 led to Draft PR #6; GitHub Actions run 36254698024 succeeded.
 ```
 
 ## Follow-ups
