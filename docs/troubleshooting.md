@@ -29,8 +29,8 @@ A pull request first loads its workflow, then starts the `ci` job, then runs eac
 flowchart LR
   A[Workflow syntax] --> B[CI job starts]
   B --> C[Commit and YAML checks]
-  B --> D[Path-scoped checks]
-  B --> E[Devlog and secret checks]
+  C --> D[Path-scoped checks]
+  D --> E[Devlog and secret checks]
 ```
 
 ## Implementation Walkthrough
