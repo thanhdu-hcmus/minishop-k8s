@@ -20,8 +20,7 @@ preserves the upstream unauthenticated behavior.
 The Dockerfile pins the Node 22.16.0 Alpine 3.21 base image to
 `sha256:9f3ae04faa4d2188825803bf890792f33cc39033c9241fc6bb201149470436ca`.
 The publish workflow creates a commit-SHA tag only from `main`; consuming
-manifests must pin the resulting digest emitted in the workflow summary.
-
-GitHub Container Registry packages initially default to private. The owner must
-decide package visibility after the first publish; public deployments require
-changing the package to public in its GitHub package settings.
+manifests must pin the resulting digest emitted in the workflow summary. After
+the first publication, verify package visibility and repository access
+permissions for the intended consumers. Adjust package settings only if they
+differ from the intended access; the workflow does not modify them.
