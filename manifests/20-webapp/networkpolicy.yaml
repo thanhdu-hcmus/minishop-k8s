@@ -27,7 +27,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/component: backend
+              app.kubernetes.io/component: minishop-backend
               app.kubernetes.io/name: minishop
       ports:
         - protocol: TCP
@@ -53,7 +53,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/component: backend
+      app.kubernetes.io/component: minishop-backend
       app.kubernetes.io/name: minishop
   policyTypes:
     - Ingress
@@ -64,6 +64,18 @@ spec:
             matchLabels:
               app.kubernetes.io/component: frontend
               app.kubernetes.io/name: minishop
+      ports:
+        - protocol: TCP
+          port: 3001
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: monitoring-kube-prometheus-prometheus
+              app.kubernetes.io/name: prometheus
+              operator.prometheus.io/name: monitoring-kube-prometheus-prometheus
       ports:
         - protocol: TCP
           port: 3001
