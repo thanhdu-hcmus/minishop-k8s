@@ -28,6 +28,7 @@ LABEL org.opencontainers.image.source="https://github.com/thanhdu-hcmus/minishop
 LABEL org.opencontainers.image.revision="$SOURCE_REVISION"
 
 COPY --from=dependencies /usr/src/app/node_modules ./node_modules
+COPY LICENSE ./LICENSE
 COPY package.json ./
 COPY app ./app
 COPY db/items.json ./db/items.json

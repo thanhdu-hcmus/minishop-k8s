@@ -1,3 +1,8 @@
+/*
+ * Derived from Apache-2.0 kumahq/kuma-demo api/app/redis.js at db9e133.
+ * Modified for Redis v6 and optional REDIS_PASSWORD support; see ../LICENSE.
+ */
+
 const items = require("../db/items.json");
 const redis = require("redis");
 

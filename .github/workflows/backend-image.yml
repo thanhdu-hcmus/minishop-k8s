@@ -39,6 +39,14 @@ jobs:
           target: test
           push: false
 
+      - name: Build production backend image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          context: images/backend
+          target: runtime
+          push: false
+
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
