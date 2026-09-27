@@ -25,6 +25,7 @@ Provide durable symptom-to-fix guidance for the process-scaffold failures that f
 | Dynamic ShellCheck source | A dynamically resolved shell helper may need an explicit source directive or scoped suppression. |
 | GHCR package access | Package visibility and repository access permissions need verification after first publication. |
 | NetworkPolicy enforcement | A cluster may accept NetworkPolicy objects without enforcing them if its CNI does not implement policy enforcement. |
+| HPA selector overlap | A workload can match more than one HPA selector, making scaling ambiguous even when resource names differ. |
 
 ## Architecture / Flow
 A pull request first loads its workflow, then starts the `ci` job, then runs each validation step.
@@ -65,6 +66,8 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** ShellCheck reports `SC1091` for a helper sourced through a computed path. **Cause:** static analysis cannot resolve that dynamic source path. **Fix:** add a precise source directive when possible, or use a scoped suppression only for the dynamic source after validating the helper locally.
 - **Symptom:** A fresh cluster cannot pull the published backend image. **Cause:** Package visibility or repository access permissions do not allow the intended consumers. **Fix:** verify both settings after the first protected-main publication and adjust only when needed; the workflow does not change package access.
 - **Symptom:** A denied-path probe still reaches a selected Pod after NetworkPolicies apply. **Cause:** the active CNI may not enforce Kubernetes NetworkPolicy; this occurred with the local Kind `kindnet` cluster. **Fix:** verify which CNI is active and test enforcement on a policy-capable CNI before treating a successful API apply as proof that traffic is denied.
+- **Symptom:** An HPA reports `AmbiguousSelector` or fails to calculate metrics for its target. **Cause:** its target Pods also match another HPA's selector; distinct HPA and Deployment names do not prevent selector overlap. **Fix:** compare each HPA target's Deployment selector and selected Pod labels, then give the new workload a disjoint selector and align its Service, NetworkPolicy, and ServiceMonitor selectors. Changing a Deployment selector is immutable; plan a controlled recreation of only that Deployment and verify legacy workloads remain unchanged.
+- **Symptom:** The platform deploy script stops with `Missing required command: helm`. **Cause:** Helm is not available on the host `PATH`; `scripts/deploy-platform.sh` requires both `helm` and `kubectl`. **Fix:** use an approved pinned Helm version or provide a documented containerized invocation, then run the full script and verify the existing release is preserved. Testing chart operations in a container does not by itself validate the complete script end to end.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
@@ -76,3 +79,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 ## Related Docs
 - Previous: [Process-controls remediation record](./devlog/2026-09-26-process-controls-remediation.md)
 - Next: [Agent workflow governance](./devlog/2026-09-27-agent-workflow-governance.md)
+- [Issue #26 platform record](./devlog/2026-09-27-platform-rbac-scaling-observability.md)

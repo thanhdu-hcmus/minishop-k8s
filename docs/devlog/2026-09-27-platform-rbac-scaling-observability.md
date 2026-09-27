@@ -1,13 +1,73 @@
 ---
 title: RBAC, autoscaling, and observability implementation record
 requirement: Issue #26 — RBAC, autoscaling, and observability
-status: complete
+status: verified
 last_updated: 2026-09-27
+date: 2026-09-27
 issue: "#26"
+pr: "not recorded"
 tier: T2
+reconstructed: false
+source: "Issue #26 implementation diff and devops final handoff summary"
+metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: "not recorded", ci_failures: "not recorded" }
 ---
 
 # RBAC, Autoscaling, and Observability Record
+
+## Goal
+Add least-privilege RBAC, metrics-backed scaling for the MiniShop backend, and
+cluster/workload observability to the existing local Kind runtime.
+
+## Prerequisites
+- [Issue #26](https://github.com/thanhdu-hcmus/minishop-k8s/issues/26).
+- The `kind-learn` cluster, existing `webapp` application, and
+  `minishop-app-credentials` Secret.
+- `kubectl` and Helm for the complete `scripts/deploy-platform.sh` workflow.
+
+## Key Concepts
+| Concept | Plain-language explanation |
+|---|---|
+| ServiceAccount | Workload identity; this backend's dedicated account has no Kubernetes API permissions. |
+| HorizontalPodAutoscaler (HPA) | Adjusts Deployment replicas from resource metrics within configured bounds. |
+| ServiceMonitor | Prometheus Operator resource that discovers and scrapes a labeled Service endpoint. |
+| kindnet limitation | The local cluster accepts NetworkPolicy objects but does not enforce them. |
+
+## Architecture / Flow
+```mermaid
+flowchart LR
+  D[Developer group] -->|pods and logs only| W[webapp and data]
+  B[Backend ServiceAccount] -. no API permissions .-> K[Kubernetes API]
+  M[metrics-server] -->|CPU metrics| H[Backend HPA]
+  H -->|3 to 8 replicas| BDEP[Backend Deployment]
+  P[Prometheus] -->|ServiceMonitor /metrics| BDEP
+  P --> A[Restart alert]
+  G[Grafana] --> C[Workload dashboard ConfigMap]
+```
+
+## Implementation Walkthrough
+1. **Define RBAC**: `manifests/30-platform/rbac.yaml` adds a backend ServiceAccount
+   with token automount disabled and a developer group role limited to pod and
+   pod-log access, bound in `webapp` and `data`.
+2. **Provide resource metrics and scaling**: `scripts/deploy-platform.sh` applies
+   pinned metrics-server `v0.7.2`, adds the Kind-required kubelet TLS flag when
+   absent, and bounds its resources. The HPA in
+   `manifests/30-platform/autoscaling.yaml` targets CPU utilization of 50%, with
+   3–8 replicas and scale behavior limits.
+3. **Add monitoring**: deploy the pinned kube-prometheus-stack chart `69.8.2`
+   with local resource settings, then apply
+   `manifests/30-platform/monitoring.yaml` for the workload dashboard, backend
+   ServiceMonitor, and restart alert.
+4. **Integrate safely with the existing backend**: the backend Service and
+   Deployment use a disjoint selector (`component=minishop-backend`) so the new
+   HPA does not overlap the legacy workload selector. The update also keeps the
+   corresponding NetworkPolicy and monitoring selectors aligned.
+5. **Validate behavior**: `scripts/validate-platform.sh` checks RBAC allow/deny,
+   metrics availability, HPA scale up/down, backend scraping, and the restart
+   alert; its temporary load Job and NetworkPolicies are cleaned up.
+
+## Decisions
+The T2 platform decision is recorded in
+[RBAC, autoscaling, and observability](../decisions/0007-platform-observability.md).
 
 ## Problems encountered
 ### Local Kubernetes client initially could not reach the API
@@ -109,3 +169,21 @@ tier: T2
 - The Kind cluster's `kindnet` CNI does not enforce NetworkPolicies; policy
   objects are installed narrowly, but enforcement is not claimed or runtime
   tested in this cluster.
+- The complete `scripts/deploy-platform.sh` was not invoked directly because
+  Helm was unavailable on the host. Its platform actions were exercised using
+  a pinned Helm container, preserving the existing chart release with
+  `--reuse-values`; this does not constitute an end-to-end test of that script.
+
+## Follow-ups
+- Run `scripts/deploy-platform.sh` directly on a host with Helm installed, or
+  document a supported containerized invocation, to verify the full deploy
+  script end to end.
+- Test NetworkPolicy enforcement on a CNI that implements it before claiming
+  runtime deny behavior.
+- The new Grafana dashboard ConfigMap is provided; a separate browser/UI
+  acceptance check is not recorded.
+
+## Related Docs
+- [Platform observability decision](../decisions/0007-platform-observability.md)
+- [Troubleshooting](../troubleshooting.md)
+- [Issue #26](https://github.com/thanhdu-hcmus/minishop-k8s/issues/26)
