@@ -19,9 +19,12 @@ command -v docker >/dev/null || {
 rendered=$(mktemp)
 trap 'rm -f "$rendered"' EXIT
 
-kubectl kustomize "$REPO_ROOT/kustomize/base" \
-  --load-restrictor LoadRestrictionsNone >"$rendered"
-docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 \
-  -summary -strict -ignore-missing-schemas - <"$rendered"
+for overlay in dev prod; do
+  kubectl kustomize "$REPO_ROOT/kustomize/overlays/$overlay" \
+    --load-restrictor LoadRestrictionsNone >"$rendered"
+  printf 'Validating %s overlay...\n' "$overlay"
+  docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 \
+    -summary -strict -ignore-missing-schemas - <"$rendered"
+done
 
-printf '%s\n' 'Kustomize base render and schema validation passed.'
+printf '%s\n' 'Dev and prod Kustomize overlays rendered and validated.'

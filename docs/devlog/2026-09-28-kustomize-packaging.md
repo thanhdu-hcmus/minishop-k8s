@@ -26,3 +26,9 @@ metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 0, c
 - **Root cause:** Client dry-run still needs API discovery for the configured resource mapper; this isolated worktree has no usable cluster context.
 - **Fix:** Validate rendered output with the repository's existing pinned kubeconform container instead of requiring API discovery.
 - **Verified by:** Kubeconform `v0.6.7` parsed 25 resources with zero invalid resources or errors.
+
+### Dev overlay and platform HPA replica conflict
+- **Symptom:** The requested dev backend replica count is 1, while the existing platform HPA has a minimum of 3.
+- **Root cause:** The HPA is intentionally outside the Kustomize application overlays and can override the Deployment's dev replica target at runtime.
+- **What was tried:** No HPA or cluster changes were made. The conflict was raised for owner direction before dev deployment.
+- **Verified by:** Static inspection of `manifests/30-platform/autoscaling.yaml` and Kustomize rendering; runtime behavior remains unverified pending owner direction.
