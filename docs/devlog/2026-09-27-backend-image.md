@@ -9,7 +9,7 @@ pr: "#24 (draft)"
 tier: T2
 reconstructed: false
 source: ""
-metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 1, ci_failures: 2 }
+metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 2, ci_failures: 2 }
 ---
 
 # Redis-Authenticated Backend Image Record
@@ -79,6 +79,12 @@ The T2 decision is recorded in
 - **Root cause:** The workflow line length exceeded the configured policy.
 - **Fix:** Correct the workflow line and revalidated YAML and whitespace checks.
 - **Verified by:** Workflow lint, YAML parse, and whitespace checks passed.
+
+### Unsafe item-search query
+- **Symptom:** The item search query inserted the request value directly into SQL text.
+- **Root cause:** The upstream backend built the `ILIKE` expression by string interpolation.
+- **Fix:** Pass the search pattern as a bound PostgreSQL query parameter.
+- **Verified by:** The updated source uses a `$1` placeholder; the replacement PR CI run is pending.
 
 ### Commit subject policy failure
 - **Symptom:** PR #23 CI failed commitlint because a documentation commit subject used the uppercase acronym `GHCR`.

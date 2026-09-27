@@ -29,8 +29,9 @@ const search = async (itemName) => {
     await logger.info('DNS lookup for host ' + pool.options.host + ': %j', result);
   });
   return await pool.query(
-      `SELECT data FROM marketItems WHERE name ILIKE '%${itemName}%'`
-    );
+    "SELECT data FROM marketItems WHERE name ILIKE $1",
+    [`%${itemName}%`]
+  );
 };
 
 const importData = () => {
