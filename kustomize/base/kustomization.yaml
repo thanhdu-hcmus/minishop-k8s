@@ -1,0 +1,13 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../manifests/00-storage/local-path-provisioner.yaml
+  - ../../manifests/00-storage/standard-storageclass.yaml
+  - ../../manifests/10-data/namespace.yaml
+  - ../../manifests/10-data/postgresql.yaml
+  - ../../manifests/10-data/redis.yaml
+  - ../../manifests/20-webapp/namespace.yaml
+  - ../../manifests/20-webapp/backend.yaml
+  - ../../manifests/20-webapp/frontend.yaml
+  - ../../manifests/20-webapp/networkpolicy.yaml
