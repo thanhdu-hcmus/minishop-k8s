@@ -40,9 +40,9 @@ pinning make the later application deployment reproducible.
 ## Consequences
 - Later workload manifests must use the published immutable digest, not the
   discovery tag.
-- The first GHCR package defaults to private. Its owner must explicitly set
-  package visibility after the first publication; this workflow does not
-  change visibility.
+- After the first publication, verify package visibility and inherited
+  repository permissions. Intervene in package settings only if they did not
+  inherit as intended.
 - This decision publishes no package from pull requests and does not deploy
   the backend. Application manifests, data integration, and NetworkPolicies
   remain outside this Issue.
