@@ -5,7 +5,7 @@ status: verified
 last_updated: 2026-09-27
 date: 2026-09-27
 issue: "#17"
-pr: "#18 (draft)"
+pr: "#19 (draft)"
 tier: T2
 reconstructed: false
 source: ""
@@ -33,7 +33,7 @@ later MiniShop workloads without committing runtime credentials.
 ## Architecture / Flow
 ```mermaid
 flowchart LR
-  A[Runtime credential inputs] --> B[Credential creation script]
+  A[Runtime credential inputs] --> B[Ordered deployment script]
   B --> C[Secret in data namespace]
   C --> D[PostgreSQL StatefulSet]
   C --> E[Redis StatefulSet]
@@ -51,10 +51,13 @@ flowchart LR
    restricted Pod and container security settings.
    - File(s): `manifests/10-data/postgresql.yaml`,
      `manifests/10-data/redis.yaml`
-3. **Keep credentials outside Git**: add a local credential creation script
-   that requires both inputs before applying the Secret and does not print
-   their values.
-   - File(s): `scripts/create-data-credentials.sh`
+3. **Create credentials before workloads**: `scripts/deploy-data.sh` requires
+   both runtime inputs, applies the namespace, invokes
+   `scripts/create-data-credentials.sh`, then applies PostgreSQL and Redis.
+   It stops before any Kubernetes operation when an input is missing, and
+   stops before workload application when credential creation fails.
+   - File(s): `scripts/deploy-data.sh`,
+     `scripts/create-data-credentials.sh`
 
 ## Decisions
 The T2 design decision is recorded in
@@ -62,12 +65,13 @@ The T2 design decision is recorded in
 
 ## Problems encountered
 ### Dynamic helper source in ShellCheck
-- **Symptom:** CI ShellCheck reported `SC1091` for the credential script's
+- **Symptom:** CI ShellCheck reported `SC1091` for scripts that source a
   dynamically resolved shared helper.
 - **Root cause:** The CI invocation does not follow dynamic helper paths.
-- **Fix:** Added the script-local ShellCheck suppression in commit `5eac77f`.
-- **Verified by:** The script was source-checked locally; CI runs its changed
-  shell gate.
+- **Fix:** The clean feature commit `0737de3` includes the script-local
+  ShellCheck suppression.
+- **Verified by:** Both scripts were source-checked locally; CI runs its
+  changed-shell gate.
 
 ### Transient local-path helper disruption
 - **Symptom:** `learn-worker2` transiently reset its containerd socket while
@@ -80,10 +84,12 @@ The T2 design decision is recorded in
 ## Verification evidence
 - Kubernetes client dry-run accepted the namespace, PostgreSQL, and Redis
   manifests.
-- Bash parsing and ShellCheck passed for the credential script.
-- Calling the credential script without both required inputs exited nonzero
-  with a clear error before applying credentials.
-- Both PVCs bound through `standard`; both Pods became Ready; authenticated
+- Bash parsing and ShellCheck passed for the credential and ordered deployment
+  scripts.
+- Calling the ordered deployment script without both required inputs exited
+  nonzero before any Kubernetes operation.
+- The ordered entry point created credentials before applying workloads. Both
+  PVCs bound through `standard`; both Pods became Ready; authenticated
   PostgreSQL and Redis checks passed without exposing values.
 - Controlled Pod restarts retained validation data for PostgreSQL and Redis.
   The temporary validation records were then removed.
@@ -100,4 +106,4 @@ The T2 design decision is recorded in
 - [Runtime data foundation decision](../decisions/0004-runtime-data-foundation.md)
 - [Local storage foundation record](2026-09-27-local-storage-foundation.md)
 - [Issue #17](https://github.com/thanhdu-hcmus/minishop-k8s/issues/17)
-- [PR #18](https://github.com/thanhdu-hcmus/minishop-k8s/pull/18)
+- [PR #19](https://github.com/thanhdu-hcmus/minishop-k8s/pull/19)
