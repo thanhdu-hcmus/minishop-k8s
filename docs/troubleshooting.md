@@ -23,6 +23,7 @@ Provide durable symptom-to-fix guidance for the process-scaffold failures that f
 | Git ref write denial | A filesystem sandbox can block local branch creation even when the repository worktree is writable. |
 | Runtime credential guard | A bootstrap script can stop before creating a Secret when a required runtime input is absent. |
 | Dynamic ShellCheck source | A dynamically resolved shell helper may need an explicit source directive or scoped suppression. |
+| GHCR package visibility | The first GitHub Container Registry package defaults to private until its owner explicitly changes visibility. |
 
 ## Architecture / Flow
 A pull request first loads its workflow, then starts the `ci` job, then runs each validation step.
@@ -60,6 +61,7 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** A pinned containerized linter image cannot be pulled. **Cause:** the selected image tag does not exist. **Fix:** use an available, explicitly versioned image tag and record it in the validation evidence; do not install a host tool as a substitute.
 - **Symptom:** The runtime credential script exits before creating the data Secret. **Cause:** one or both required runtime password inputs are absent. **Fix:** supply both required values through the deployer's runtime environment, then rerun the script; never add those values to tracked files.
 - **Symptom:** ShellCheck reports `SC1091` for a helper sourced through a computed path. **Cause:** static analysis cannot resolve that dynamic source path. **Fix:** add a precise source directive when possible, or use a scoped suppression only for the dynamic source after validating the helper locally.
+- **Symptom:** A fresh cluster cannot pull the published backend image. **Cause:** GHCR creates the first package as private by default. **Fix:** after its first protected-main publication, the package owner must set the intended visibility in GitHub package settings; the workflow intentionally does not alter package visibility.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
