@@ -5,11 +5,11 @@ status: verified
 last_updated: 2026-09-27
 date: 2026-09-27
 issue: "#21"
-pr: "#23 (draft)"
+pr: "#24 (draft)"
 tier: T2
 reconstructed: false
 source: ""
-metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 0, ci_failures: 1 }
+metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 1, ci_failures: 2 }
 ---
 
 # Redis-Authenticated Backend Image Record
@@ -77,9 +77,14 @@ The T2 decision is recorded in
 - **Symptom:** The first Draft PR workflow had one line over the repository
   lint limit.
 - **Root cause:** The workflow line length exceeded the configured policy.
-- **Fix:** Replace it with the single independently valid feature commit in
-  PR #23.
+- **Fix:** Correct the workflow line and revalidated YAML and whitespace checks.
 - **Verified by:** Workflow lint, YAML parse, and whitespace checks passed.
+
+### Commit subject policy failure
+- **Symptom:** PR #23 CI failed commitlint because a documentation commit subject used the uppercase acronym `GHCR`.
+- **Root cause:** Repository commitlint rules require a lowercase subject.
+- **Fix:** Recreated the final tree on a clean branch with a lowercase Conventional Commit subject, without rewriting shared history.
+- **Verified by:** PR #24 starts from `main` with a valid lowercase commit subject; its CI checks are pending.
 
 ## Verification Evidence
 - `npm ci --ignore-scripts` completed against the tracked lockfile.
@@ -95,8 +100,9 @@ The T2 decision is recorded in
 
 ## Follow-ups
 - After the PR merges, protected `main` publishes the first GHCR image and
-  records its immutable digest. The owner must explicitly choose its package
-  visibility because first GHCR packages default to private.
+  records its immutable digest. Verify package visibility and inherited
+  repository permissions; intervene in package settings only if they do not
+  inherit as intended.
 - Deploy the published digest in the separate application and network slice.
 - Do not treat the GHCR discovery tag as a deployment pin.
 
