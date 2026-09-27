@@ -1,0 +1,121 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minishop-hpa-load-test-egress
+  namespace: webapp
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: minishop-hpa-load-test
+      app.kubernetes.io/part-of: minishop
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: minishop-backend
+              app.kubernetes.io/name: minishop
+      ports:
+        - protocol: TCP
+          port: 3001
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minishop-hpa-load-test-ingress
+  namespace: webapp
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: minishop-backend
+      app.kubernetes.io/name: minishop
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: minishop-hpa-load-test
+              app.kubernetes.io/part-of: minishop
+      ports:
+        - protocol: TCP
+          port: 3001
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minishop-hpa-load-test
+  namespace: webapp
+  labels:
+    app.kubernetes.io/component: minishop-hpa-load-test
+    app.kubernetes.io/part-of: minishop
+spec:
+  activeDeadlineSeconds: 240
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: minishop-hpa-load-test
+        app.kubernetes.io/name: minishop-hpa-load-test
+        app.kubernetes.io/part-of: minishop
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: load
+          # yamllint disable rule:line-length
+          image: ghcr.io/thanhdu-hcmus/minishop-backend@sha256:e87390d3420f8e51e2df726f9efcc9e3946c40174723a045243f2dc3eeff62f4
+          # yamllint enable rule:line-length
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+            - -e
+          args:
+            - |
+              const http = require("node:http");
+              const deadline = Date.now() + 180000;
+              function request() {
+                if (Date.now() >= deadline) return;
+                const pending = http.get(
+                  "http://minishop-backend:3001/",
+                  (response) => {
+                  response.resume();
+                  response.on("end", request);
+                });
+                pending.on("error", () => setTimeout(request, 50));
+              }
+              for (let worker = 0; worker < 32; worker += 1) request();
+              setTimeout(() => process.exit(0), 180000);
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true

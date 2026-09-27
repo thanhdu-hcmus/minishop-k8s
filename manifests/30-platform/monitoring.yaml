@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minishop-workload-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  # yamllint disable rule:line-length
+  minishop-workloads.json: |
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "cores"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "id": 1,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+          "targets": [{"expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"$namespace\",pod=~\"$pod\",container!=\"\",image!=\"\"}[5m]))", "legendFormat": "{{pod}}", "refId": "A"}],
+          "title": "Workload CPU usage",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "id": 2,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+          "targets": [{"expr": "sum by (pod, container) (kube_pod_container_status_restarts_total{namespace=\"$namespace\",pod=~\"$pod\"})", "legendFormat": "{{pod}} / {{container}}", "refId": "A"}],
+          "title": "Workload container restarts",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "templating": {"list": [
+        {"current": {"selected": true, "text": "webapp", "value": "webapp"}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "definition": "label_values(kube_pod_info, namespace)", "label": "Namespace", "name": "namespace", "query": {"query": "label_values(kube_pod_info, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 1, "type": "query"},
+        {"current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "definition": "label_values(kube_pod_info{namespace=\"$namespace\"}, pod)", "includeAll": true, "label": "Pod", "multi": true, "name": "pod", "query": {"query": "label_values(kube_pod_info{namespace=\"$namespace\"}, pod)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 1, "type": "query"}
+      ]},
+      "time": {"from": "now-1h", "to": "now"},
+      "title": "MiniShop workload health",
+      "uid": "minishop-workloads",
+      "version": 1
+    }
+  # yamllint enable rule:line-length
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: minishop-backend
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - webapp
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: minishop-backend
+      app.kubernetes.io/name: minishop
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: minishop-backend-restarts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: minishop.workload-health
+      rules:
+        - alert: MiniShopBackendRestart
+          expr: >-
+            sum by (pod) (
+            increase(kube_pod_container_status_restarts_total{
+            namespace="webapp",pod=~"minishop-backend-.*",
+            container="backend"}[5m])
+            ) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: MiniShop backend container restarted
+            description: >-
+              Backend container in {{ $labels.pod }} restarted within the last
+              five minutes.
