@@ -16,6 +16,7 @@ kubectl_for_minishop apply --dry-run=client \
   -f "$REPO_ROOT/manifests/20-webapp/networkpolicy.yaml" >/dev/null
 
 kubectl_for_minishop -n data get secret minishop-data-credentials >/dev/null
+kubectl_for_minishop -n webapp get secret minishop-app-credentials >/dev/null
 kubectl_for_minishop -n data rollout status statefulset/minishop-postgresql --timeout=180s
 kubectl_for_minishop -n data rollout status statefulset/minishop-redis --timeout=180s
 kubectl_for_minishop -n webapp rollout status deployment/minishop-backend --timeout=180s
