@@ -21,6 +21,8 @@ Provide durable symptom-to-fix guidance for the process-scaffold failures that f
 | Synthetic merge commit | GitHub can create a temporary merge ref for a PR; commitlint should check the actual branch commits instead. |
 | Hosted runner | A runner image is not a contract that every convenience tool is installed. |
 | Git ref write denial | A filesystem sandbox can block local branch creation even when the repository worktree is writable. |
+| Runtime credential guard | A bootstrap script can stop before creating a Secret when a required runtime input is absent. |
+| Dynamic ShellCheck source | A dynamically resolved shell helper may need an explicit source directive or scoped suppression. |
 
 ## Architecture / Flow
 A pull request first loads its workflow, then starts the `ci` job, then runs each validation step.
@@ -56,6 +58,8 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** A local Git branch command reports a read-only ref filesystem. **Cause:** not recorded; the command could not write under `.git/refs`. **Fix:** report the exact command and obtain owner authorization before using an approved remote fallback; do not bypass the denial.
 - **Symptom:** A local-path PVC remains unbound before a consumer Pod is scheduled. **Cause:** the configured `StorageClass` uses `WaitForFirstConsumer` to select a node before creating node-local storage. **Fix:** create or schedule the consumer Pod, then inspect the PVC and provisioner rollout.
 - **Symptom:** A pinned containerized linter image cannot be pulled. **Cause:** the selected image tag does not exist. **Fix:** use an available, explicitly versioned image tag and record it in the validation evidence; do not install a host tool as a substitute.
+- **Symptom:** The runtime credential script exits before creating the data Secret. **Cause:** one or both required runtime password inputs are absent. **Fix:** supply both required values through the deployer's runtime environment, then rerun the script; never add those values to tracked files.
+- **Symptom:** ShellCheck reports `SC1091` for a helper sourced through a computed path. **Cause:** static analysis cannot resolve that dynamic source path. **Fix:** add a precise source directive when possible, or use a scoped suppression only for the dynamic source after validating the helper locally.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
