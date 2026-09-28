@@ -28,3 +28,4 @@ scoped cleanup.
 22. [Pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md) — Issue #32 scoped recovery, persistence, HPA, and preservation evidence.
 23. [MiniShop resilience validation results](./validation-results.md) — Issue #32 runtime evidence and limitations.
 24. [CI and runtime troubleshooting](./troubleshooting.md) — curated workflow and runtime failure diagnosis and fixes.
+25. [MiniShop operator guide record](./devlog/2026-09-28-minishop-operator-guide.md) — Issue #34 documentation scope and validation evidence.
