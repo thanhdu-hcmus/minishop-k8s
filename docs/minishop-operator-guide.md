@@ -31,16 +31,20 @@ does not install the application.
 
 Use one runtime packaging path at a time. The Helm chart and the Kustomize
 overlay describe the same app/data runtime; do not apply both over one another.
-Both expect namespaces `data` and `webapp`, the two MiniShop credential Secret
-objects and the `webapp/minishop-backend` ServiceAccount. The Helm deployment
-script additionally requires the platform backend HPA with `minReplicas` of at
-least three; Kustomize deploy does not require that HPA. When installed, the
-platform HPA can raise the dev overlay/chart request of one backend replica to
-its minimum. Kustomize dev also brings in the shared local-path storage
-resources. The local cluster described here already has the external platform
-and runtime prerequisites. For the component-level setup and migration
-boundary, see [Helm packaging](./decisions/0009-helm-packaging.md) and
-[Kustomize packaging](./decisions/0008-kustomize-packaging.md).
+The Helm deploy script requires the `data` and `webapp` namespaces, both
+MiniShop credential Secret objects, the `webapp/minishop-backend`
+ServiceAccount, and the platform backend HPA with `minReplicas` of at least
+three to exist before deployment. Kustomize deploy requires the ServiceAccount
+for its backend Pods. If both `MINISHOP_POSTGRES_PASSWORD` and
+`MINISHOP_REDIS_PASSWORD` are set, it creates the namespaces and both
+credential Secrets; otherwise it expects the namespaces and Secrets to already
+exist. Kustomize does not require the platform HPA. When installed, that HPA
+can raise the dev overlay/chart request of one backend replica to its minimum.
+Kustomize dev also brings in the shared local-path storage resources. The local
+cluster described here already has the external platform and runtime
+prerequisites. For the component-level setup and migration boundary, see
+[Helm packaging](./decisions/0009-helm-packaging.md) and [Kustomize
+packaging](./decisions/0008-kustomize-packaging.md).
 
 ### Helm (current local release)
 
