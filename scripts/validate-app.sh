@@ -9,11 +9,12 @@ source "$SCRIPT_DIR/lib.sh"
 
 require_context
 
-kubectl_for_minishop apply --dry-run=client \
-  -f "$REPO_ROOT/manifests/20-webapp/namespace.yaml" \
-  -f "$REPO_ROOT/manifests/20-webapp/backend.yaml" \
-  -f "$REPO_ROOT/manifests/20-webapp/frontend.yaml" \
-  -f "$REPO_ROOT/manifests/20-webapp/networkpolicy.yaml" >/dev/null
+rendered=$(mktemp)
+trap 'rm -f "$rendered"' EXIT
+
+kubectl kustomize "$REPO_ROOT/kustomize/overlays/dev" \
+  --load-restrictor LoadRestrictionsNone >"$rendered"
+kubectl_for_minishop apply --dry-run=server -f "$rendered" >/dev/null
 
 kubectl_for_minishop -n data get secret minishop-data-credentials >/dev/null
 kubectl_for_minishop -n webapp get secret minishop-app-credentials >/dev/null

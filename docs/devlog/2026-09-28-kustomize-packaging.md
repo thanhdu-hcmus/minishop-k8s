@@ -30,5 +30,25 @@ metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 0, c
 ### Dev overlay and platform HPA replica conflict
 - **Symptom:** The requested dev backend replica count is 1, while the existing platform HPA has a minimum of 3.
 - **Root cause:** The HPA is intentionally outside the Kustomize application overlays and can override the Deployment's dev replica target at runtime.
-- **What was tried:** No HPA or cluster changes were made. The conflict was raised for owner direction before dev deployment.
-- **Verified by:** Static inspection of `manifests/30-platform/autoscaling.yaml` and Kustomize rendering; runtime behavior remains unverified pending owner direction.
+- **Resolution:** The owner approved keeping the HPA active and the dev overlay at 1 backend replica. The deploy path reports and waits for the HPA's configured minimum; live backend replicas are therefore at least 3 while the HPA is active.
+- **Verified by:** The dev render sets the backend to 1; live `minishop-backend` HPA status has a minimum/current/desired count of 3, and all three backend replicas are Ready after deployment.
+
+### Stale validator loop terminator
+- **Symptom:** `bash -n` rejected `scripts/validate-kustomize.sh` after extending its overlay checks to include teardown.
+- **Root cause:** The loop was refactored to a helper function but retained the old `done` terminator.
+- **Fix:** Removed the stale terminator and obsolete status message.
+- **Verified by:** `bash -n`, ShellCheck, and pinned kubeconform validation of dev, prod, and teardown renders.
+
+### Existing helper scripts are not executable
+- **Symptom:** The deploy path failed when directly invoking `scripts/validate-app.sh`.
+- **Root cause:** Existing credential and app-validation helpers are tracked without executable bits.
+- **Fix:** Keep the data-writing E2E probe separate from idempotent deployment and document its explicit invocation as `bash scripts/validate-app.sh`; the validation helper now performs a server-side dry-run of the dev Kustomize render. The existing probe writes one demo item to persistent data and is not run automatically by deployment.
+- **Verified by:** The deployment script passes without runtime password environment inputs by reusing both existing Secret objects; `bash scripts/validate-app.sh` then passed its Kustomize server dry-run and frontend-to-backend-to-data check.
+
+## Verification evidence
+- `kubectl kustomize` rendered dev and prod with exactly the same 25 resources as the base; only the requested backend/frontend Deployment replica counts differ. Kubeconform `v0.6.7` accepted 25/25 resources for each render and 13/13 teardown resources.
+- The deploy script applies only dev. Prod is rendered and schema-validated but is not deployed to the local Kind cluster.
+- Yamllint `1.35.1`, ShellCheck `0.10.0`, Bash parsing, and `git diff --check` passed for changed YAML and scripts.
+- The dev bundle deployed in `kind-learn` using existing credential Secret objects, without reading or printing secret values. PostgreSQL, Redis, frontend, and backend reached Ready; the active platform HPA kept the backend at 3 replicas despite the dev manifest's replica count of 1.
+- Scoped teardown removed only the MiniShop app/data Services, Deployments, StatefulSets, and NetworkPolicies. It preserved both Secret objects, all five bound PVCs, namespaces, StorageClasses, provisioner, and platform HPA. Redeployment through the dev overlay succeeded using retained credentials and PVCs.
+- Pre/post metadata snapshots for all Deployments, HPAs, PVCs, and StorageClasses matched exactly, including legacy `webapp/backend` and `webapp/frontend` Deployments and HPA, metrics-server, and monitoring workloads. Kind's `kindnet` CNI does not enforce NetworkPolicies; this remains a documented environment limitation.
