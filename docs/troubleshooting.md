@@ -1,11 +1,11 @@
 ---
-title: CI troubleshooting
+title: CI and runtime troubleshooting
 requirement: DOC-03 — curate instructive process failures
 status: verified
-last_updated: 2026-09-27
+last_updated: 2026-09-28
 ---
 
-# CI Troubleshooting
+# CI and Runtime Troubleshooting
 
 ## Goal
 Provide durable symptom-to-fix guidance for the process-scaffold failures that future MiniShop pull requests could repeat.
@@ -29,6 +29,7 @@ Provide durable symptom-to-fix guidance for the process-scaffold failures that f
 | Kustomize source paths | A base that reuses manifests outside its directory needs an explicit load-restriction choice. |
 | Overlay replica targets | An HPA may set a live replica count above the replica value rendered by an overlay. |
 | Kind runtime recovery | A transient container-runtime sandbox failure can leave a workload Pod Pending during a Helm reinstall. |
+| Application database authentication | An HTTP-success response can still carry a database error instead of application data. |
 
 ## Architecture / Flow
 A pull request first loads its workflow, then starts the `ci` job, then runs each validation step.
@@ -74,6 +75,14 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** Kustomize cannot load canonical manifests referenced outside the base directory. **Cause:** the default `LoadRestrictionsRootOnly` disallows files outside the Kustomization root. **Fix:** when references are explicit local repository files and no plugins or remote sources are involved, render with `--load-restrictor LoadRestrictionsNone`; validate the output before applying it.
 - **Symptom:** A dev overlay renders one backend replica but the running Deployment has more. **Cause:** an active HPA can override the Deployment's requested replica count to satisfy its minimum. **Fix:** inspect the target HPA's `minReplicas` and status, then distinguish the overlay's desired value from the live count; do not disable or modify the HPA implicitly.
 - **Symptom:** A Helm reinstall is delayed by a Pending Pod during a transient Kind/containerd sandbox issue. **Cause:** not recorded. **Fix:** inspect Pod status/events and wait for the workload to recover; do not restart a node by default. If one non-running Pod remains after recovery, confirm it belongs to the Helm-managed controller before deleting only that Pod, then verify its replacement and all workload rollouts become Ready.
+- **Symptom:** `GET /items?q=` returns HTTP 200 but the response contains
+  PostgreSQL error code `28P01` instead of item data. **Cause:** the response
+  reports a database authentication failure; the specific credential mismatch
+  is not recorded. **Fix:** treat the endpoint as unsuccessful for data-path
+  validation, avoid displaying credential values or database records, and ask
+  the credential owner to diagnose the configuration. Do not alter credentials
+  or persisted data outside an approved scope. Issue #32 recorded this
+  condition without resolving it.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
@@ -88,3 +97,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #26 platform record](./devlog/2026-09-27-platform-rbac-scaling-observability.md)
 - [Issue #28 Kustomize packaging record](./devlog/2026-09-28-kustomize-packaging.md)
 - [Issue #30 Helm packaging record](./devlog/2026-09-28-helm-packaging.md)
+- [Issue #32 pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)

@@ -21,4 +21,6 @@
 19. [Kustomize packaging record](./devlog/2026-09-28-kustomize-packaging.md) — Issue #28 implementation, runtime validation, and follow-ups.
 20. [Helm packaging decision](./decisions/0009-helm-packaging.md) — T2 Helm chart boundary, prerequisites, and scoped migration/teardown decision.
 21. [Helm packaging record](./devlog/2026-09-28-helm-packaging.md) — Issue #30 implementation, lifecycle validation, and preserved-state evidence.
-22. [CI and runtime troubleshooting](./troubleshooting.md) — curated workflow and runtime failure diagnosis and fixes.
+22. [Pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md) — Issue #32 scoped recovery, persistence, HPA, and preservation evidence.
+23. [MiniShop resilience validation results](./validation-results.md) — Issue #32 runtime evidence and limitations.
+24. [CI and runtime troubleshooting](./troubleshooting.md) — curated workflow and runtime failure diagnosis and fixes.
