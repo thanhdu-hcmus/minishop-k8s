@@ -175,6 +175,7 @@ and safe recovery commands are in [resilience validation results](./validation-r
   [implementation record](./devlog/2026-09-28-kustomize-packaging.md).
 - [Helm packaging decision](./decisions/0009-helm-packaging.md) and
   [implementation record](./devlog/2026-09-28-helm-packaging.md).
-- [Platform RBAC, scaling, and observability record](./devlog/2026-09-27-platform-rbac-scaling-observability.md).
+- [Platform observability decision](./decisions/0007-platform-observability.md)
+  and [implementation record](./devlog/2026-09-27-platform-rbac-scaling-observability.md).
 - [Pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)
   and [validation results](./validation-results.md).
