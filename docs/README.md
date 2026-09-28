@@ -1,5 +1,9 @@
 # MiniShop documentation
 
+**Start here:** [Local MiniShop operator guide](./minishop-operator-guide.md) —
+current WSL2/Kind Helm and Kustomize deployment, inspection, validation, and
+scoped cleanup.
+
 1. [Git workflow](./process/git-workflow.md) — Issue-to-PR delivery rules.
 2. [Process scaffold baseline](./decisions/0001-process-scaffold-baseline.md) — public-repository protections, history exception, and sanitized backup decision.
 3. [Process-controls remediation decision](./decisions/0002-process-controls-remediation.md) — T2 forward-only correction decision.
