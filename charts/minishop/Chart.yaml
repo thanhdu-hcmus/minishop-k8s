@@ -1,0 +1,6 @@
+---
+apiVersion: v2
+name: minishop
+description: MiniShop data and web application runtime
+type: application
+version: 0.1.0

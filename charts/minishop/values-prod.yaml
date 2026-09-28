@@ -1,0 +1,4 @@
+---
+replicas:
+  backend: 3
+  frontend: 2

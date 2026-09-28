@@ -1,0 +1,56 @@
+---
+# yamllint disable rule:line-length
+images:
+  postgresql:
+    repository: postgres
+    digest: sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
+  redis:
+    repository: redis
+    digest: sha256:976ab0f0939b78c06d802bcd3bea44c5142ea9a756a57b861e08819817f768c8
+  backend:
+    repository: ghcr.io/thanhdu-hcmus/minishop-backend
+    digest: sha256:e87390d3420f8e51e2df726f9efcc9e3946c40174723a045243f2dc3eeff62f4
+  frontend:
+    repository: kumahq/kuma-demo-fe
+    digest: sha256:8f91195663f6eab3f9b973f18450272807663146142a40a918d92368e24af8d0
+# yamllint enable rule:line-length
+
+replicas:
+  postgresql: 1
+  redis: 1
+  backend: 3
+  frontend: 1
+
+resources:
+  postgresql:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  redis:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  backend:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  frontend:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+credentials:
+  dataSecretName: minishop-data-credentials
+  appSecretName: minishop-app-credentials
