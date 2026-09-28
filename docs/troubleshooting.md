@@ -26,6 +26,8 @@ Provide durable symptom-to-fix guidance for the process-scaffold failures that f
 | GHCR package access | Package visibility and repository access permissions need verification after first publication. |
 | NetworkPolicy enforcement | A cluster may accept NetworkPolicy objects without enforcing them if its CNI does not implement policy enforcement. |
 | HPA selector overlap | A workload can match more than one HPA selector, making scaling ambiguous even when resource names differ. |
+| Kustomize source paths | A base that reuses manifests outside its directory needs an explicit load-restriction choice. |
+| Overlay replica targets | An HPA may set a live replica count above the replica value rendered by an overlay. |
 
 ## Architecture / Flow
 A pull request first loads its workflow, then starts the `ci` job, then runs each validation step.
@@ -68,6 +70,8 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** A denied-path probe still reaches a selected Pod after NetworkPolicies apply. **Cause:** the active CNI may not enforce Kubernetes NetworkPolicy; this occurred with the local Kind `kindnet` cluster. **Fix:** verify which CNI is active and test enforcement on a policy-capable CNI before treating a successful API apply as proof that traffic is denied.
 - **Symptom:** An HPA reports `AmbiguousSelector` or fails to calculate metrics for its target. **Cause:** its target Pods also match another HPA's selector; distinct HPA and Deployment names do not prevent selector overlap. **Fix:** compare each HPA target's Deployment selector and selected Pod labels, then give the new workload a disjoint selector and align its Service, NetworkPolicy, and ServiceMonitor selectors. Changing a Deployment selector is immutable; plan a controlled recreation of only that Deployment and verify legacy workloads remain unchanged.
 - **Symptom:** The platform deploy script stops with `Missing required command: helm`. **Cause:** Helm is not available on the host `PATH`; `scripts/deploy-platform.sh` requires both `helm` and `kubectl`. **Fix:** use an approved pinned Helm version or provide a documented containerized invocation, then run the full script and verify the existing release is preserved. Testing chart operations in a container does not by itself validate the complete script end to end.
+- **Symptom:** Kustomize cannot load canonical manifests referenced outside the base directory. **Cause:** the default `LoadRestrictionsRootOnly` disallows files outside the Kustomization root. **Fix:** when references are explicit local repository files and no plugins or remote sources are involved, render with `--load-restrictor LoadRestrictionsNone`; validate the output before applying it.
+- **Symptom:** A dev overlay renders one backend replica but the running Deployment has more. **Cause:** an active HPA can override the Deployment's requested replica count to satisfy its minimum. **Fix:** inspect the target HPA's `minReplicas` and status, then distinguish the overlay's desired value from the live count; do not disable or modify the HPA implicitly.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
@@ -80,3 +84,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - Previous: [Process-controls remediation record](./devlog/2026-09-26-process-controls-remediation.md)
 - Next: [Agent workflow governance](./devlog/2026-09-27-agent-workflow-governance.md)
 - [Issue #26 platform record](./devlog/2026-09-27-platform-rbac-scaling-observability.md)
+- [Issue #28 Kustomize packaging record](./devlog/2026-09-28-kustomize-packaging.md)
