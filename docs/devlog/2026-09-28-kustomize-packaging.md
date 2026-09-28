@@ -45,6 +45,12 @@ metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 0, c
 - **Fix:** Keep the data-writing E2E probe separate from idempotent deployment and document its explicit invocation as `bash scripts/validate-app.sh`; the validation helper now performs a server-side dry-run of the dev Kustomize render. The existing probe writes one demo item to persistent data and is not run automatically by deployment.
 - **Verified by:** The deployment script passes without runtime password environment inputs by reusing both existing Secret objects; `bash scripts/validate-app.sh` then passed its Kustomize server dry-run and frontend-to-backend-to-data check.
 
+### Local commitlint package fetch unavailable
+- **Symptom:** The pinned `npx @commitlint/cli@19.8.1` check could not download the package.
+- **Root cause:** DNS resolution for `registry.npmjs.org` returned `EAI_AGAIN` in the local environment.
+- **What was tried:** The repository-pinned CLI version was invoked with the branch commit range; it failed before running.
+- **Verified by:** All three commit subjects were manually checked against `.commitlintrc.json`; CI remains responsible for running the pinned CLI.
+
 ## Verification evidence
 - `kubectl kustomize` rendered dev and prod with exactly the same 25 resources as the base; only the requested backend/frontend Deployment replica counts differ. Kubeconform `v0.6.7` accepted 25/25 resources for each render and 13/13 teardown resources.
 - The deploy script applies only dev. Prod is rendered and schema-validated but is not deployed to the local Kind cluster.
