@@ -17,4 +17,6 @@
 15. [Backend image record](./devlog/2026-09-27-backend-image.md) — Issue #21 source-derived Redis-authenticated backend and validation record.
 16. [Application network boundary record](./devlog/2026-09-27-application-network-boundary.md) — Issue #20 app deployment, credential setup, network policies, and validation record.
 17. [Platform RBAC, scaling, and observability record](./devlog/2026-09-27-platform-rbac-scaling-observability.md) — Issue #26 implementation and verified runtime behavior.
-18. [CI and runtime troubleshooting](./troubleshooting.md) — curated workflow and runtime failure diagnosis and fixes.
+18. [Kustomize packaging decision](./decisions/0008-kustomize-packaging.md) — T2 shared base, dev/prod overlays, and scoped teardown decision.
+19. [Kustomize packaging record](./devlog/2026-09-28-kustomize-packaging.md) — Issue #28 implementation, runtime validation, and follow-ups.
+20. [CI and runtime troubleshooting](./troubleshooting.md) — curated workflow and runtime failure diagnosis and fixes.

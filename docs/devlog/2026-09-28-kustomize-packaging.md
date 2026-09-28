@@ -1,18 +1,62 @@
 ---
 title: Kustomize packaging implementation record
 requirement: Issue #28 — package MiniShop manifests with Kustomize
-status: in progress
+status: verified
 last_updated: 2026-09-28
 date: 2026-09-28
 issue: "#28"
-pr: ""
+pr: "not recorded"
 tier: T2
 reconstructed: false
 source: ""
-metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 0, ci_failures: 0 }
+metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: "not recorded", ci_failures: "not recorded" }
 ---
 
 # Kustomize Packaging Implementation Record
+
+## Goal
+Package the canonical MiniShop manifests as a Kustomize base, provide dev and
+prod replica overlays, and add a scoped dev deploy and teardown path.
+
+## Prerequisites
+- [Issue #28](https://github.com/thanhdu-hcmus/minishop-k8s/issues/28).
+- Existing runtime credentials in the `data` and `webapp` namespaces, or both
+  runtime password inputs to create them.
+- The local `kind-learn` cluster for dev deployment; prod is not deployed here.
+
+## Key Concepts
+| Concept | Plain-language explanation |
+|---|---|
+| Kustomize base | A set of canonical manifests that can be rendered without copying them into each environment. |
+| Overlay | A small environment-specific customization layered over a shared base. |
+| Load restriction | Kustomize normally limits source files to the Kustomization root; this base explicitly references canonical manifests outside its own directory. |
+
+## Architecture / Flow
+```mermaid
+flowchart LR
+  A[Canonical manifests] --> B[Kustomize base]
+  B --> C[dev: 1 backend, 1 frontend]
+  B --> D[prod: 3 backend, 2 frontend]
+  C --> E[dev deploy script]
+  E --> F[kind-learn]
+  G[dev teardown bundle] --> H[scoped runtime deletion]
+```
+
+## Implementation Walkthrough
+1. **Reuse canonical resources**: the base references nine existing storage,
+   data, and webapp YAML files; it renders 25 Kubernetes objects.
+2. **Keep overlays small**: dev and prod alter only backend and frontend
+   Deployment replica counts. Dev is 1/1; prod is 3/2.
+3. **Deploy and remove only the app/data runtime**: the dev scripts validate,
+   render, and apply the dev overlay, or delete its scoped teardown bundle.
+   Teardown retains credentials, PVCs, namespaces, shared storage, and platform
+   resources.
+4. **Validate before apply**: the pinned schema check validates dev, prod, and
+   teardown renders; the deploy script applies dev only.
+
+## Decisions
+The T2 packaging and overlay decision is recorded in
+[Kustomize packaging](../decisions/0008-kustomize-packaging.md).
 
 ## Problems encountered
 ### Kustomize base source restrictions
@@ -58,3 +102,12 @@ metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: 0, c
 - The dev bundle deployed in `kind-learn` using existing credential Secret objects, without reading or printing secret values. PostgreSQL, Redis, frontend, and backend reached Ready; the active platform HPA kept the backend at 3 replicas despite the dev manifest's replica count of 1.
 - Scoped teardown removed only the MiniShop app/data Services, Deployments, StatefulSets, and NetworkPolicies. It preserved both Secret objects, all five bound PVCs, namespaces, StorageClasses, provisioner, and platform HPA. Redeployment through the dev overlay succeeded using retained credentials and PVCs.
 - Pre/post metadata snapshots for all Deployments, HPAs, PVCs, and StorageClasses matched exactly, including legacy `webapp/backend` and `webapp/frontend` Deployments and HPA, metrics-server, and monitoring workloads. Kind's `kindnet` CNI does not enforce NetworkPolicies; this remains a documented environment limitation.
+
+## Follow-ups
+- CI was pending at documentation handoff; confirm its result during PR review.
+- Prod was rendered and schema-validated but not deployed to the local Kind cluster.
+
+## Related Docs
+- [Kustomize packaging decision](../decisions/0008-kustomize-packaging.md)
+- [Issue #28](https://github.com/thanhdu-hcmus/minishop-k8s/issues/28)
+- PR: not recorded
