@@ -99,7 +99,8 @@ local port-forward; stop it with Ctrl-C when finished, then browse to
 
 ```bash
 frontend_pod=$(KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
-  get pods -o 'jsonpath={.items[0].metadata.name}' --selector \
+  get pods --field-selector=status.phase=Running \
+  -o 'jsonpath={.items[0].metadata.name}' --selector \
   app.kubernetes.io/component=frontend,app.kubernetes.io/name=minishop,app.kubernetes.io/part-of=minishop)
 KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
   port-forward "pod/$frontend_pod" 8080:8080
