@@ -36,6 +36,13 @@ const search = async (itemName) => {
 
 const importData = async () => {
   const client = await pool.connect();
+  // pg-pool detaches its idle listener at checkout, so without this an 'error' event
+  // from a dropped connection is unhandled and kills the process. The failed query
+  // still rejects, so this listener only logs.
+  const onClientError = (error) => {
+    logger.error({ err: error }, 'postgresql client error during import');
+  };
+  client.on("error", onClientError);
   let rollbackError;
   try {
     await client.query("BEGIN");
@@ -65,6 +72,7 @@ const importData = async () => {
     throw error;
   } finally {
     logger.debug("Release");
+    client.removeListener("error", onClientError);
     // Passing an error makes the pool discard a connection left in an unknown state.
     client.release(rollbackError);
   }

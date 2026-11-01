@@ -1,22 +1,36 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const { Pool } = require("pg");
 const items = require("../db/items.json");
 const { importData } = require("../app/postgresql");
 
 const isInsert = text => text.startsWith("INSERT");
 
-const fakeClient = ({ failOn } = {}) => {
-  const client = {
+// EventEmitter supplies on/removeListener and, like a real pg client, throws when
+// 'error' is emitted with no listener attached.
+const fakeClient = ({ failOn, dropOn } = {}) => {
+  const client = Object.assign(new EventEmitter(), {
     calls: [],
     finished: [],
     released: [],
+    errorListenersDuringQueries: [],
+    errorListenersAtRelease: [],
+    dropped: false,
     query(text, values) {
       client.calls.push({ text, values });
+      client.errorListenersDuringQueries.push(client.listenerCount("error"));
       return new Promise((resolve, reject) => {
         setImmediate(() => {
           client.finished.push(text);
-          if (failOn && failOn(text)) {
+          if (client.dropped) {
+            reject(new Error("Client has encountered a connection error and is not queryable"));
+          } else if (dropOn && dropOn(text)) {
+            client.dropped = true;
+            const error = new Error("Connection terminated unexpectedly");
+            client.emit("error", error);
+            reject(error);
+          } else if (failOn && failOn(text)) {
             reject(new Error(`query failed: ${text}`));
           } else {
             resolve({ rows: [] });
@@ -26,8 +40,9 @@ const fakeClient = ({ failOn } = {}) => {
     },
     release(error) {
       client.released.push(error);
+      client.errorListenersAtRelease.push(client.listenerCount("error"));
     }
-  };
+  });
   return client;
 };
 
@@ -69,4 +84,26 @@ test("keeps the original error and discards the connection when rollback fails",
 
   assert.equal(client.released.length, 1);
   assert.match(client.released[0].message, /query failed: ROLLBACK/);
+});
+
+test("listens for client errors during the import and stops before release", async t => {
+  const client = fakeClient();
+  t.mock.method(Pool.prototype, "connect", async () => client);
+
+  await importData();
+
+  assert.ok(client.errorListenersDuringQueries.every(count => count === 1));
+  assert.deepEqual(client.errorListenersAtRelease, [0]);
+});
+
+test("rejects and discards the connection when it drops during the import", async t => {
+  const client = fakeClient({ dropOn: isInsert });
+  t.mock.method(Pool.prototype, "connect", async () => client);
+
+  await assert.rejects(importData(), /Connection terminated unexpectedly/);
+
+  assert.equal(client.finished.includes("COMMIT"), false);
+  assert.equal(client.released.length, 1);
+  assert.match(client.released[0].message, /not queryable/);
+  assert.deepEqual(client.errorListenersAtRelease, [0]);
 });
