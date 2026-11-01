@@ -6,7 +6,7 @@ last_updated: 2026-11-02
 date: 2026-11-02
 issue: "#36"
 pr: "not recorded"
-tier: "T2 (stated in the Issue body)"
+tier: T2
 reconstructed: false
 source: "Owner-approved scope brief and runtime evidence from this implementation"
 metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: "not recorded", ci_failures: "not recorded" }
@@ -36,13 +36,16 @@ approved widening it to the end-to-end item fix, including the interim seed.
 3. `images/backend/app/postgresql.js` `importData` returns a promise, awaits
    parameterized inserts one at a time inside the transaction, and rethrows the
    original error after rollback. If rollback fails, the pool discards the
-   connection.
+   connection. A client `error` listener stays attached for the whole import
+   and is removed before release.
 4. `images/backend/index.js` awaits both imports in a `try`/`catch`, returns 500
    on failure, and listens only when run as the entry point so tests can load it.
-5. `scripts/validate-app.sh` resolves the Pod with the three-label selector. It
+5. `scripts/validate-app.sh` resolves the Pod with the three-label selector,
+   limited to `status.phase=Running` so a Failed or Evicted Pod is not selected. It
    skips `POST /upload` when items exist and fails, without uploading, on any
    response other than an empty list or `42P01`. It also checks the reviews route.
-6. The operator guide port-forward now targets the resolved Pod.
+6. The operator guide port-forward now targets the resolved Pod, using the same
+   `Running` filter.
 7. Seeded the running cluster once from a MiniShop backend Pod, using a script
    that was not committed.
 
@@ -121,14 +124,41 @@ approved widening it to the end-to-end item fix, including the interim seed.
 ### First test-stage build did not finish
 - **Symptom:** A `docker build --target test` run on the unfixed code produced no
   output for more than 180 seconds and was stopped.
-- **Cause:** Not determined.
+- **Cause:** The HEAD `upload.test.js` fails against the unfixed `index.js`, then
+  never exits. That `index.js` exports nothing, so each test fails with
+  `app.listen is not a function`, and its top-level `app.listen` keeps
+  `node --test` alive.
 - **What was tried:** Ran each test file separately with a hard timeout in the
-  dependencies-stage image; all finished.
-- **Fix:** None needed for the code. The same build later ran on the fixed code.
-- **Verification:** That build exited 0 with 9 of 9 tests passing.
+  dependencies-stage image; all finished. Later ran the HEAD `upload.test.js`
+  against the `index.js` from before `dfd8c86`. A first attempt used the image's
+  busybox `timeout`, whose exit 1 did not show whether the run had ended on its own.
+  Timed from the host instead, all three tests failed and the run was still alive
+  when killed at 40 seconds.
+- **Fix:** The `require.main` guard in `index.js` resolved it, because loading the
+  module no longer opens a listener.
+- **Verification:** The same build later exited 0 with 9 of 9 tests passing on the
+  fixed code. The 180-second build itself was not re-run.
+
+### Dropped connection during import crashed the backend
+- **Symptom:** Review found that a fake PostgreSQL server dropping the socket on
+  the first `INSERT` made the process exit 1 with `Connection terminated
+  unexpectedly`, and `POST /upload` sent no response.
+- **Cause:** `pg-pool` removes its idle `error` listener at checkout and restores
+  it at release. During the import the client had no listener, so the `error`
+  event was unhandled.
+- **What was tried:** Confirmed the checkout and release lines in the installed
+  `pg-pool` source. Added two tests using a fake client built on `EventEmitter`,
+  which throws on an unhandled `error` as a real client does. Both failed on the
+  unfixed code, and the dropped-connection test failed with an `uncaughtException`.
+- **Fix:** `importData` attaches a logging `error` listener after checkout and
+  removes it in `finally`, before release. The failed query still rejects, so the
+  existing rollback and 500 paths run.
+- **Verification:** Both tests passed after the fix. The same fake server then
+  received HTTP 500 from `POST /upload`, and the process stayed up until the
+  harness exited it with code 0.
 
 ## Verification Evidence
-- `docker build --target test images/backend`: 9 tests, 9 passed, 0 failed. The
+- `docker build --target test images/backend`: 11 tests, 11 passed, 0 failed. The
   image was not published.
 - Interim seed: `marketitems` was absent before the run; afterwards it held 100
   rows and Redis held 100 keys. Only counts were printed.
@@ -136,7 +166,10 @@ approved widening it to the end-to-end item fix, including the interim seed.
   was HTTP 200 with object code `42P01`. After: `/items?q=` was HTTP 200 with an
   array of 100, and `/items/1/reviews` was HTTP 200 with an array of 5.
 - `scripts/validate-app.sh` exited 0, reported the MiniShop Pod, and skipped
-  `POST /upload`.
+  `POST /upload`. A re-run with the `Running` filter, after a read-only check
+  counted 100 items, gave the same result and named
+  `minishop-frontend-75c5d596b5-z8972`. The operator guide lookup resolved the same
+  Pod.
 - `scripts/validate-kustomize.sh` and `scripts/validate-helm.sh` exited 0.
 - `bash -n` and `koalaman/shellcheck:v0.10.0` passed on `scripts/validate-app.sh`.
 - All five PVC names and UIDs matched the baseline taken before the seed.
@@ -147,8 +180,8 @@ approved widening it to the end-to-end item fix, including the interim seed.
 ## Limitations
 - The running backend image is still the old one. The fixes reach the cluster
   only after the owner merges, the image publishes, and a digest-pin PR follows.
-  Until then, do not call `POST /upload` on the running stack, because the old
-  code path can still fail as described above.
+  Until then, do not call `POST /upload` on the running stack: on the old image it
+  crashes the backend container (unhandled rejection, exit 1) and writes no data.
 - The seed is data only. A rebuilt database needs the new image or another seed.
 - `/items` and the reviews route still return HTTP 200 for backend errors.
 - `POST /upload` remains unauthenticated and drops the table when called.
@@ -156,7 +189,6 @@ approved widening it to the end-to-end item fix, including the interim seed.
   `42P01`, so it must not run in that state until the new image is deployed.
 - The `minishop-frontend` Service and Deployment selectors still overlap legacy
   Pods, so the Service can route to them.
-- The first test-stage build's silence for 180+ seconds is not determined.
 
 ## Decisions
 - The seed script was kept out of the repository because it is one-time and is
