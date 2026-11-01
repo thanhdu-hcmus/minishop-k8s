@@ -34,36 +34,40 @@ const search = async (itemName) => {
   );
 };
 
-const importData = () => {
-  (async () => {
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query("DROP TABLE IF EXISTS marketItems");
+const importData = async () => {
+  const client = await pool.connect();
+  let rollbackError;
+  try {
+    await client.query("BEGIN");
+    await client.query("DROP TABLE IF EXISTS marketItems");
+    await client.query(
+      `CREATE TABLE marketItems(
+        index INTEGER PRIMARY KEY,
+        name TEXT,
+        data JSONB
+      )`
+    );
+    for (const item of items) {
       await client.query(
-        `CREATE TABLE marketItems(
-          index INTEGER PRIMARY KEY,
-          name TEXT,
-          data JSONB
-        )`
+        "INSERT INTO marketItems VALUES($1, $2, $3)",
+        [item.index, item.name, JSON.stringify(item)]
       );
-      items.forEach((item) => {
-        client.query(
-          `INSERT INTO marketItems VALUES(${item.index},'${
-            item.name
-          }','${JSON.stringify(item)}')`
-        );
-      });
-      await client.query("COMMIT");
-    } catch (e) {
-      logger.error('search error: ', err);
-      await client.query("ROLLBACK");
-      throw e;
-    } finally {
-      logger.debug("Release");
-      client.release();
     }
-  })().catch((e) => logger.error(e.stack));
+    await client.query("COMMIT");
+  } catch (error) {
+    logger.error({ err: error }, 'postgresql import failed');
+    try {
+      await client.query("ROLLBACK");
+    } catch (failure) {
+      logger.error({ err: failure }, 'postgresql rollback failed');
+      rollbackError = failure;
+    }
+    throw error;
+  } finally {
+    logger.debug("Release");
+    // Passing an error makes the pool discard a connection left in an unknown state.
+    client.release(rollbackError);
+  }
 };
 
 
