@@ -93,17 +93,22 @@ objects.
 The browser talks to the frontend in namespace `webapp`; the frontend proxies
 requests to the `minishop-backend` Service, also in `webapp`. The backend uses
 the PostgreSQL and Redis Services in namespace `data`. The frontend Service is
-cluster-internal, so this read-only local inspection command briefly opens a
+cluster-internal, so these read-only local inspection commands briefly open a
 local port-forward; stop it with Ctrl-C when finished, then browse to
 `http://127.0.0.1:8080`:
 
 ```bash
+frontend_pod=$(KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+  get pods -o 'jsonpath={.items[0].metadata.name}' --selector \
+  app.kubernetes.io/component=frontend,app.kubernetes.io/name=minishop,app.kubernetes.io/part-of=minishop)
 KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
-  port-forward service/minishop-frontend 8080:8080
+  port-forward "pod/$frontend_pod" 8080:8080
 ```
 
-The port-forward is temporary and does not create a Kubernetes resource. The
-Kind host-port mappings for 80/443 do not by themselves provide an Ingress
+Forward to the Pod, not `service/minishop-frontend`: the Service selector also
+matches legacy frontend Pods, and only the `part-of=minishop` label separates
+them. The port-forward is temporary and does not create a Kubernetes resource.
+The Kind host-port mappings for 80/443 do not by themselves provide an Ingress
 controller or expose the ClusterIP frontend Service.
 
 ## Namespaces, persistence, and platform
