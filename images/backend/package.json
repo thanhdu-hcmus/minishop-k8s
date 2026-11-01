@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "test": "node --test test/redis-options.test.js"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "body-parser": "2.3.0",

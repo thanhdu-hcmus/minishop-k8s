@@ -68,7 +68,7 @@ const search = async itemId => {
 
 const importData = async () => {
   await withClient(client =>
-    Promise.all(items.map(item => client.set(item.index, JSON.stringify(item.reviews))))
+    Promise.all(items.map(item => client.set(String(item.index), JSON.stringify(item.reviews))))
   );
 };
 
