@@ -34,22 +34,56 @@ const request = (method, path) => new Promise((resolve, reject) => {
   request.end();
 });
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-(async () => {
-  const upload = await request("POST", "/upload");
-  if (upload.status !== 200) throw new Error("upload request failed");
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const items = await request("GET", "/items?q=");
-    try {
-      if (items.status === 200 && Array.isArray(JSON.parse(items.body)) && JSON.parse(items.body).length > 0) {
-        return;
-      }
-    } catch (_) {}
-    await sleep(1000);
+const parse = body => {
+  try {
+    return JSON.parse(body);
+  } catch (_) {
+    return undefined;
   }
-  throw new Error("frontend to backend to data check failed");
+};
+const getItems = async () => {
+  const response = await request("GET", "/items?q=");
+  return { status: response.status, body: parse(response.body) };
+};
+const hasItems = items =>
+  items.status === 200 && Array.isArray(items.body) && items.body.length > 0;
+const isUnseeded = items =>
+  items.status === 200 &&
+  ((Array.isArray(items.body) && items.body.length === 0) ||
+    (items.body !== undefined && items.body.code === "42P01"));
+(async () => {
+  let items = await getItems();
+  if (hasItems(items)) {
+    console.log("Items already present; skipping POST /upload.");
+  } else {
+    // POST /upload drops and recreates the table, so run it only with nothing to lose.
+    if (!isUnseeded(items)) throw new Error("items request failed before seeding");
+    const upload = await request("POST", "/upload");
+    if (upload.status !== 200) throw new Error("upload request failed");
+    for (let attempt = 0; attempt < 20 && !hasItems(items); attempt += 1) {
+      await sleep(1000);
+      items = await getItems();
+    }
+    if (!hasItems(items)) throw new Error("frontend to backend to postgresql check failed");
+  }
+  const reviews = await request("GET", "/items/" + items.body[0].data.index + "/reviews");
+  const reviewList = parse(reviews.body);
+  if (reviews.status !== 200 || !Array.isArray(reviewList) || reviewList.length === 0) {
+    throw new Error("frontend to backend to redis check failed");
+  }
 })().catch(error => { console.error(error.message); process.exit(1); });'
 
-kubectl_for_minishop -n webapp exec deployment/minishop-frontend -- \
+# The Deployment and Service selectors also match legacy frontend Pods, so resolve
+# the Pod with part-of=minishop instead of exec into deployment/minishop-frontend.
+frontend_selector=app.kubernetes.io/component=frontend,app.kubernetes.io/name=minishop
+frontend_selector+=,app.kubernetes.io/part-of=minishop
+kubectl_for_minishop -n webapp wait pod --selector "$frontend_selector" \
+  --for=condition=Ready --timeout=180s >/dev/null
+frontend_pod=$(kubectl_for_minishop -n webapp get pods --selector "$frontend_selector" \
+  --field-selector=status.phase=Running -o 'jsonpath={.items[0].metadata.name}')
+printf 'Probing through MiniShop frontend Pod %s.\n' "$frontend_pod"
+
+kubectl_for_minishop -n webapp exec "pod/$frontend_pod" -c frontend -- \
   node -e "$frontend_probe"
 
 kubectl_for_minishop -n webapp get networkpolicy \
