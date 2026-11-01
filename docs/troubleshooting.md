@@ -2,7 +2,7 @@
 title: CI and runtime troubleshooting
 requirement: DOC-03 — curate instructive process failures
 status: verified
-last_updated: 2026-09-28
+last_updated: 2026-11-02
 ---
 
 # CI and Runtime Troubleshooting
@@ -77,12 +77,33 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - **Symptom:** A Helm reinstall is delayed by a Pending Pod during a transient Kind/containerd sandbox issue. **Cause:** not recorded. **Fix:** inspect Pod status/events and wait for the workload to recover; do not restart a node by default. If one non-running Pod remains after recovery, confirm it belongs to the Helm-managed controller before deleting only that Pod, then verify its replacement and all workload rollouts become Ready.
 - **Symptom:** `GET /items?q=` returns HTTP 200 but the response contains
   PostgreSQL error code `28P01` instead of item data. **Cause:** the response
-  reports a database authentication failure; the specific credential mismatch
-  is not recorded. **Fix:** treat the endpoint as unsuccessful for data-path
-  validation, avoid displaying credential values or database records, and ask
-  the credential owner to diagnose the configuration. Do not alter credentials
-  or persisted data outside an approved scope. Issue #32 recorded this
-  condition without resolving it.
+  reports a database authentication failure. In the case Issue #32 recorded, the
+  PostgreSQL password was persisted in the PVC, so later Secret changes did not
+  apply to the existing role. **Fix:** treat the endpoint as unsuccessful for
+  data-path validation, avoid displaying credential values or database records,
+  and ask the credential owner to align the role password. Do not delete the PVC
+  or alter credentials outside an approved scope. The owner resolved this case
+  during Issue #36; the exact steps are not recorded.
+- **Symptom:** `GET /items?q=` returns HTTP 200 with error code `42P01`, and the
+  reviews route returns an empty object. **Cause:** the `marketitems` table and
+  Redis keys were never seeded. **Fix:** seed through the fixed `POST /upload`
+  once its image is deployed. On the current old image, follow the
+  [interim restriction](./minishop-operator-guide.md#inspect-and-validate).
+- **Symptom:** `POST /upload` fails with a `TypeError` such as
+  `"arguments[1]" must be of type "string | Buffer"`, and PostgreSQL is not
+  seeded. **Cause:** node-redis 6.2.1 rejects numeric keys. **Fix:** convert keys
+  with `String(...)` before `client.set`.
+- **Symptom:** `kubectl exec deployment/minishop-frontend` or a validator result
+  comes from a legacy `frontend-*` Pod. **Cause:** the `minishop-frontend` Service and Deployment
+  selectors use only `component=frontend` and `name=minishop`, which legacy
+  frontend Pods also carry; only `part-of=minishop` separates them. **Fix:**
+  resolve the Pod with all three labels and target `pod/<name>`. This is a
+  workaround: the selectors remain unchanged, and a Deployment selector is
+  immutable, so narrowing it needs a planned change.
+- **Symptom:** A command run as `wsl.exe ... bash -lc '...'` reports
+  `context "kind-learn" does not exist` or shows an empty variable. **Cause:** the
+  outer shell expanded `$` expressions before the inner bash ran. **Fix:** keep any
+  WSL command containing `$` in a script file and run that file.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
@@ -98,3 +119,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #28 Kustomize packaging record](./devlog/2026-09-28-kustomize-packaging.md)
 - [Issue #30 Helm packaging record](./devlog/2026-09-28-helm-packaging.md)
 - [Issue #32 pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)
+- [Issue #36 item seeding record](./devlog/2026-11-02-minishop-item-seeding.md)

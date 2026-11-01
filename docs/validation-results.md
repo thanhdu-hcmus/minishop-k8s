@@ -64,6 +64,11 @@ changed. This is recorded as an existing runtime limitation, not a successful
 database-backed application check; credential diagnosis and repair are outside
 Issue #32's approved scope.
 
+> **Update (Issue #36, 2026-11-02):** the paragraph above is the result as of
+> 2026-09-28 and no longer describes the cluster. After the owner aligned the
+> role password the route returned `42P01`; after a one-time seed it returned 100
+> items. See the [Issue #36 record](./devlog/2026-11-02-minishop-item-seeding.md).
+
 ## Persistent data recovery
 
 - PostgreSQL: created a uniquely named temporary table and marker in the
@@ -331,6 +336,12 @@ existing `scripts/validate-app.sh` writes an application record with
 `POST /upload`, so it was not run to avoid mutating unrelated app data. The full
 platform validator also performs a container restart beyond this Issue's test
 scope. No dependencies, CI, storage, credentials, or HPA settings were changed.
+
+> **Update (Issue #36, 2026-11-02):** the `validate-app.sh` statement above
+> describes the script as of 2026-09-28. It now calls `POST /upload` only for an
+> empty item list or `42P01`, and skips it when items exist. The interim
+> restriction on `POST /upload` is in the
+> [operator guide](./minishop-operator-guide.md#inspect-and-validate).
 
 The cluster uses Kind's `kindnet`, which does not enforce NetworkPolicies; the
 temporary policies' presence does not establish enforcement behavior.

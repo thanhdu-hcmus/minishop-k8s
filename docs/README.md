@@ -29,3 +29,4 @@ scoped cleanup.
 23. [MiniShop resilience validation results](./validation-results.md) — Issue #32 runtime evidence and limitations.
 24. [CI and runtime troubleshooting](./troubleshooting.md) — curated workflow and runtime failure diagnosis and fixes.
 25. [MiniShop operator guide record](./devlog/2026-09-28-minishop-operator-guide.md) — Issue #34 documentation scope and validation evidence.
+26. [MiniShop item seeding record](./devlog/2026-11-02-minishop-item-seeding.md) — Issue #36 upload, validator, and interim seed repair, with remaining gaps.

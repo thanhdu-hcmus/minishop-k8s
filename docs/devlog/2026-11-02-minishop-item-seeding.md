@@ -6,7 +6,7 @@ last_updated: 2026-11-02
 date: 2026-11-02
 issue: "#36"
 pr: "not recorded"
-tier: "not labelled on the Issue; owner to confirm"
+tier: "T2 (stated in the Issue body)"
 reconstructed: false
 source: "Owner-approved scope brief and runtime evidence from this implementation"
 metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: "not recorded", ci_failures: "not recorded" }
@@ -18,6 +18,10 @@ metrics: { wall_time: "not recorded", usage: "not recorded", review_rounds: "not
 Make `GET /items?q=` and the reviews route return data on the MiniShop stack,
 make `POST /upload` fail honestly, and make validation prove the MiniShop Pods
 rather than the legacy Pods that share their labels.
+
+## Scope
+The Issue text on GitHub is stale and could not be updated. The owner directly
+approved widening it to the end-to-end item fix, including the interim seed.
 
 ## Key Concepts
 | Concept | Plain-language explanation |
@@ -79,8 +83,11 @@ rather than the legacy Pods that share their labels.
 - **Fix:** Resolve the Pod by all three labels in the validator and operator
   guide. The shared selectors are unchanged; see Follow-ups.
 - **Verification:** The validator printed
-  `minishop-frontend-75c5d596b5-z8972` and passed. Earlier validator results
-  recorded in other devlog entries may describe the legacy stack.
+  `minishop-frontend-75c5d596b5-z8972` and passed. The "validate-app passed"
+  records in [2026-09-27-application-network-boundary](./2026-09-27-application-network-boundary.md)
+  and [2026-09-28-kustomize-packaging](./2026-09-28-kustomize-packaging.md)
+  predate this finding and may have tested the legacy stack. That is unconfirmed,
+  and those records are left unchanged.
 
 ### Validator could destroy existing data
 - **Symptom:** The validator always called `POST /upload`, which drops and
@@ -101,6 +108,15 @@ rather than the legacy Pods that share their labels.
 - **What was tried:** The failed command made no change.
 - **Fix:** Moved commands containing `$` into script files and ran those.
 - **Verification:** The script ran and returned the expected Pod name.
+
+### PostgreSQL password did not follow the Secret
+- **Symptom:** `GET /items?q=` returned `28P01` before the password was aligned.
+- **Cause:** The password was persisted in the PVC, so Secret changes did not
+  apply to the existing role.
+- **What was tried:** Not recorded.
+- **Fix:** The owner aligned the role password; the exact steps are not recorded.
+- **Verification:** The route moved from `28P01` to `42P01`, then returned 100
+  items after the seed.
 
 ### First test-stage build did not finish
 - **Symptom:** A `docker build --target test` run on the unfixed code produced no
@@ -136,6 +152,11 @@ rather than the legacy Pods that share their labels.
 - The seed is data only. A rebuilt database needs the new image or another seed.
 - `/items` and the reviews route still return HTTP 200 for backend errors.
 - `POST /upload` remains unauthenticated and drops the table when called.
+- `scripts/validate-app.sh` still calls `POST /upload` for an empty list or
+  `42P01`, so it must not run in that state until the new image is deployed.
+- The `minishop-frontend` Service and Deployment selectors still overlap legacy
+  Pods, so the Service can route to them.
+- The first test-stage build's silence for 180+ seconds is not determined.
 
 ## Decisions
 - The seed script was kept out of the repository because it is one-time and is
@@ -149,8 +170,10 @@ rather than the legacy Pods that share their labels.
 - Narrow the `minishop-frontend` Service and Deployment selectors. A Deployment
   selector is immutable, so that needs its own planned change.
 - Return non-2xx from `/items` and the reviews route on backend errors.
+- Authenticate or remove `POST /upload`.
 
 ## Related Docs
 - [Issue #36](https://github.com/thanhdu-hcmus/minishop-k8s/issues/36)
 - [Operator guide](../minishop-operator-guide.md)
 - [Troubleshooting](../troubleshooting.md)
+- [Resilience validation results](../validation-results.md)
