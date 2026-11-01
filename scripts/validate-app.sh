@@ -78,7 +78,7 @@ const isUnseeded = items =>
 frontend_selector=app.kubernetes.io/component=frontend,app.kubernetes.io/name=minishop
 frontend_selector+=,app.kubernetes.io/part-of=minishop
 kubectl_for_minishop -n webapp wait pod --selector "$frontend_selector" \
-  --for=condition=Ready --timeout=180s >/dev/null
+  --field-selector=status.phase=Running --for=condition=Ready --timeout=180s >/dev/null
 frontend_pod=$(kubectl_for_minishop -n webapp get pods --selector "$frontend_selector" \
   --field-selector=status.phase=Running -o 'jsonpath={.items[0].metadata.name}')
 printf 'Probing through MiniShop frontend Pod %s.\n' "$frontend_pod"
