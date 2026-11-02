@@ -44,6 +44,9 @@ approved widening it to the end-to-end item fix, including the interim seed.
    limited to `status.phase=Running` so a Failed or Evicted Pod is not selected. It
    skips `POST /upload` when items exist and fails, without uploading, on any
    response other than an empty list or `42P01`. It also checks the reviews route.
+   The `kubectl wait` on that selector exits at once if no Pod is Running, rather
+   than waiting out its 180-second timeout: the filter leaves nothing to wait for,
+   so the validator stops there.
 6. The operator guide port-forward now targets the resolved Pod, using the same
    `Running` filter.
 7. Seeded the running cluster once from a MiniShop backend Pod, using a script
@@ -124,18 +127,36 @@ approved widening it to the end-to-end item fix, including the interim seed.
 ### First test-stage build did not finish
 - **Symptom:** A `docker build --target test` run on the unfixed code produced no
   output for more than 180 seconds and was stopped.
-- **Cause:** The HEAD `upload.test.js` fails against the unfixed `index.js`, then
-  never exits. That `index.js` exports nothing, so each test fails with
-  `app.listen is not a function`, and its top-level `app.listen` keeps
-  `node --test` alive.
-- **What was tried:** Ran each test file separately with a hard timeout in the
-  dependencies-stage image; all finished. Later ran the HEAD `upload.test.js`
-  against the `index.js` from before `dfd8c86`. A first attempt used the image's
-  busybox `timeout`, whose exit 1 did not show whether the run had ended on its own.
-  Timed from the host instead, all three tests failed and the run was still alive
-  when killed at 40 seconds.
-- **Fix:** The `require.main` guard in `index.js` resolved it, because loading the
-  module no longer opens a listener.
+- **Cause:** Partly determined; this corrects the "determined cause" wording of
+  commit `9be34c2`. Why the build never finished has a supported explanation. Why
+  it printed nothing was not determined.
+  - **Hang (reproduced, but not in the original build):** The HEAD
+    `upload.test.js` fails against the unfixed `index.js`, then never exits. That
+    `index.js` exports nothing, so each test fails with
+    `app.listen is not a function`, and its top-level `app.listen` keeps
+    `node --test` alive.
+  - **Silence (not determined):** The reproduction ran one test file outside
+    `docker build`, and it reported three test failures. So it shows a hang with
+    results, not the original total silence. No later run tested `docker build`
+    output on the unfixed code, and the build's own log is not recorded.
+- **What was tried:** First, each test file ran separately with a hard timeout in
+  the dependencies-stage image, and all were recorded as finished. The timeout
+  tool, its duration, the exit codes, and the file versions were not recorded.
+  Later, the HEAD `upload.test.js` ran against the `index.js` from before
+  `dfd8c86`. A first attempt used the image's busybox `timeout`, whose exit 1 did
+  not show whether the run had ended on its own. Timed from the host instead, all
+  three tests failed and the run was still alive when killed at 40 seconds.
+- **Conflict between those two results:** The first says `upload.test.js`
+  finished, and the second says it did not exit. The record cannot show why. The
+  busybox result shows that a hard timeout alone cannot separate a run that ended
+  from one that was stopped, so "finished" may have meant only that the timeout
+  returned; that is not confirmed. `dfd8c86` added `upload.test.js`, so no earlier
+  commit shows which version the first run used. The host-timed run is the stronger
+  evidence, because it directly observed the process alive.
+- **Fix:** The `require.main` guard in `index.js` removes the listener that kept
+  the reproduction alive, because loading the module no longer opens one. No
+  separate fix was made for the silence. The guard arrived with the other `dfd8c86`
+  changes, so its effect on the original build was not isolated.
 - **Verification:** The same build later exited 0 with 9 of 9 tests passing on the
   fixed code. The 180-second build itself was not re-run.
 
@@ -196,6 +217,9 @@ approved widening it to the end-to-end item fix, including the interim seed.
 - The seed wrote Redis first: `SET` is idempotent, so a PostgreSQL failure would
   leave a safe rerun, while the table check gates the rerun in the other order.
 - No architecture changed; no ADR was created.
+- ADR waiver: the owner did not explicitly state a waiver. The coordinator
+  recommended waiving the ADR (bug fix, no architecture change), and the owner
+  approved proceeding with the recommendations on 2026-11-02.
 
 ## Follow-ups
 - Publish the fixed image and open a digest-pin PR.

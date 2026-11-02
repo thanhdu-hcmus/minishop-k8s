@@ -73,6 +73,18 @@ Issue #21" no longer described this image.
   an upload, Redis stopped, either port closed, and either password wrong. The
   mid-upload case kept the 100 rows through rollback.
 
+- Times to the 500 response: PostgreSQL port closed 147 ms, PostgreSQL stopped
+  mid-upload 535 ms, wrong PostgreSQL password 460 ms, Redis port closed 74 ms,
+  wrong Redis password 5928 ms. A repeat upload stayed at 100 rows.
+- All of the above used throwaway containers. Nothing was deployed, so the cluster
+  still runs the old digest until the owner deploys this one.
+
+## Decisions
+- No ADR was created.
+- Pinning went ahead with the idle pooled client exit still open, as recorded
+  under Problems. The handler is the same in the old image, so the new image does
+  not add this exit and does remove the old image's `POST /upload` crash.
+
 ## Follow-up
 - #39 covers the idle pooled client exit, the Redis wait, and a later image and
   digest pin. Until then this image can still exit if PostgreSQL stops within
