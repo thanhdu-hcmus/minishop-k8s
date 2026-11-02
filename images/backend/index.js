@@ -36,9 +36,14 @@ app.get("/", (req, res) => {
 });
 
 app.post("/upload", async (req, res) => {
-  await redis.importData();
-  await postgresql.importData();
-  res.end("Mock data updated in Redis and PostgreSQL!");
+  try {
+    await redis.importData();
+    await postgresql.importData();
+    res.end("Mock data updated in Redis and PostgreSQL!");
+  } catch (err) {
+    logger.error({ err }, 'mock data import failed');
+    res.status(500).end("Mock data import failed");
+  }
 });
 
 app.get("/items", async (req, res) => {
@@ -96,4 +101,8 @@ app.get("/items/:itemIndexId/reviews", (req, res) => {
     });
 });
 
-app.listen(app.get("port"), "0.0.0.0");
+if (require.main === module) {
+  app.listen(app.get("port"), "0.0.0.0");
+}
+
+module.exports = app;

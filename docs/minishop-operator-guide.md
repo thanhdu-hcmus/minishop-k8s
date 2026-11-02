@@ -93,17 +93,23 @@ objects.
 The browser talks to the frontend in namespace `webapp`; the frontend proxies
 requests to the `minishop-backend` Service, also in `webapp`. The backend uses
 the PostgreSQL and Redis Services in namespace `data`. The frontend Service is
-cluster-internal, so this read-only local inspection command briefly opens a
+cluster-internal, so these read-only local inspection commands briefly open a
 local port-forward; stop it with Ctrl-C when finished, then browse to
 `http://127.0.0.1:8080`:
 
 ```bash
+frontend_pod=$(KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+  get pods --field-selector=status.phase=Running \
+  -o 'jsonpath={.items[0].metadata.name}' --selector \
+  app.kubernetes.io/component=frontend,app.kubernetes.io/name=minishop,app.kubernetes.io/part-of=minishop)
 KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
-  port-forward service/minishop-frontend 8080:8080
+  port-forward "pod/$frontend_pod" 8080:8080
 ```
 
-The port-forward is temporary and does not create a Kubernetes resource. The
-Kind host-port mappings for 80/443 do not by themselves provide an Ingress
+Forward to the Pod, not `service/minishop-frontend`: the Service selector also
+matches legacy frontend Pods, and only the `part-of=minishop` label separates
+them. The port-forward is temporary and does not create a Kubernetes resource.
+The Kind host-port mappings for 80/443 do not by themselves provide an Ingress
 controller or expose the ClusterIP frontend Service.
 
 ## Namespaces, persistence, and platform
@@ -140,17 +146,33 @@ bash scripts/validate-helm.sh
 ```
 
 The two validators render the dev/prod configurations and run schema checks;
-they do not install or upgrade workloads. `bash scripts/validate-app.sh` is not
-read-only: it submits an application record as part of its end-to-end check.
-Consult the script before running any validation that writes application data.
+they do not install or upgrade workloads. `bash scripts/validate-app.sh` is only
+conditionally read-only. It probes through the Pod resolved by the
+`part-of=minishop` selector and checks `GET /items?q=`:
 
-The frontend root check is distinct from database-backed item behavior. The
-last scoped validation observed `GET /` returning HTTP 200, while
-`GET /items?q=` returned HTTP 200 with PostgreSQL error code `28P01`, not item
-data. This credential mismatch is unresolved. See
-[troubleshooting](./troubleshooting.md) and [resilience validation results](./validation-results.md);
-do not treat the item route as passing data-path validation or change
-credentials as part of routine inspection.
+- Items present: it skips `POST /upload`, then checks the reviews route.
+- Empty list or PostgreSQL code `42P01`: it calls `POST /upload`, which drops
+  and recreates the table, then rechecks both routes.
+- Any other response: it fails without uploading.
+
+The frontend root check is distinct from database-backed item behavior, and
+`/items` and the reviews route can return HTTP 200 for a backend error, so
+inspect the response body. The item route first returned `28P01`
+(authentication failed), then `42P01` (table absent) after the owner aligned the
+role password. Since the Issue #36 interim seed it has returned 100 items.
+See [troubleshooting](./troubleshooting.md) and the
+[Issue #36 record](./devlog/2026-11-02-minishop-item-seeding.md).
+
+**Interim state.** The cluster was seeded once (100 rows, 100 Redis keys) but
+still runs the old backend image, without the Issue #36 code fixes. Do not call
+`POST /upload` on it. That includes running the validator if the items are ever
+empty or the table is absent, because it would then upload. The fixes reach the
+cluster only after the owner merges, the image publishes, and a digest-pin PR
+follows. The seed is data only: a rebuilt database needs the new image or
+another seed.
+
+Known gaps: the `minishop-frontend` Service and Deployment selectors still
+overlap legacy frontend Pods, and `POST /upload` is unauthenticated.
 
 ## Scoped cleanup
 
