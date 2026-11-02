@@ -9,7 +9,7 @@ images:
     digest: sha256:976ab0f0939b78c06d802bcd3bea44c5142ea9a756a57b861e08819817f768c8
   backend:
     repository: ghcr.io/thanhdu-hcmus/minishop-backend
-    digest: sha256:e87390d3420f8e51e2df726f9efcc9e3946c40174723a045243f2dc3eeff62f4
+    digest: sha256:44a87d71dda575c0e062e1474eafbe5885169aeb0ce4c123b81f2b497dd1d7af
   frontend:
     repository: kumahq/kuma-demo-fe
     digest: sha256:8f91195663f6eab3f9b973f18450272807663146142a40a918d92368e24af8d0
