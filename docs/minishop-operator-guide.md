@@ -163,16 +163,43 @@ role password. Since the Issue #36 interim seed it has returned 100 items.
 See [troubleshooting](./troubleshooting.md) and the
 [Issue #36 record](./devlog/2026-11-02-minishop-item-seeding.md).
 
-**Interim state.** The cluster was seeded once (100 rows, 100 Redis keys) but
-still runs the old backend image, without the Issue #36 code fixes. Do not call
-`POST /upload` on it. That includes running the validator if the items are ever
-empty or the table is absent, because it would then upload. The fixes reach the
-cluster only after the owner merges, the image publishes, and a digest-pin PR
-follows. The seed is data only: a rebuilt database needs the new image or
-another seed.
+**Interim state.** The repository pins backend digest
+`sha256:44a87d71dda575c0e062e1474eafbe5885169aeb0ce4c123b81f2b497dd1d7af`, built
+from `4e7b847` (#43). A pin is not a deployment: the cluster keeps running the old
+digest until the new one is deployed. This read-only command shows which digest
+the Deployment requests:
+
+```bash
+KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+  get deployment minishop-backend \
+  -o 'jsonpath={.spec.template.spec.containers[0].image}'
+```
+
+While it shows any other digest, do not call `POST /upload`. That includes
+running the validator if the items are ever empty or the table is absent, because
+it would then upload. The cluster was seeded once (100 rows, 100 Redis keys). The
+seed is data only: a rebuilt database needs the new image or another seed.
+
+`POST /upload` behaves differently on each image:
+
+- **Old image:** it crashes the backend container and writes no data.
+- **New image, tested only with throwaway containers:** it returns 200 and loads
+  100 rows and 100 keys, and a repeat upload stays at 100 rows. A dependency
+  failure during an upload returns 500 and the process survives. Most failures
+  returned in under 6 seconds, but a Redis host that no longer resolves took about
+  64-67 seconds; its cluster behaviour is untested. Timings are in
+  [troubleshooting](./troubleshooting.md).
+- **Both images:** `POST /upload` is not crash-free. If PostgreSQL stops within
+  about 10 seconds of the last use, the pool's error handler calls
+  `process.exit(-1)`, so the backend exits 255 and the request gets no response.
+  This was reproduced in Docker. The cluster effect, restarted replicas, is
+  inferred and untested. It is tracked in
+  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), as is the Redis
+  wait.
 
 Known gaps: the `minishop-frontend` Service and Deployment selectors still
-overlap legacy frontend Pods, and `POST /upload` is unauthenticated.
+overlap legacy frontend Pods, and `POST /upload` is unauthenticated and drops the
+table when called.
 
 ## Scoped cleanup
 

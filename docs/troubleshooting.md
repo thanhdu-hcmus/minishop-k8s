@@ -86,13 +86,48 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   during Issue #36; the exact steps are not recorded.
 - **Symptom:** `GET /items?q=` returns HTTP 200 with error code `42P01`, and the
   reviews route returns an empty object. **Cause:** the `marketitems` table and
-  Redis keys were never seeded. **Fix:** seed through the fixed `POST /upload`
-  once its image is deployed. On the current old image, follow the
+  Redis keys were never seeded. **Fix:** seed through `POST /upload` only once
+  the digest `sha256:44a87d71...d7af` is deployed. Until then, follow the
   [interim restriction](./minishop-operator-guide.md#inspect-and-validate).
-- **Symptom:** `POST /upload` fails with a `TypeError` such as
-  `"arguments[1]" must be of type "string | Buffer"`, and PostgreSQL is not
-  seeded. **Cause:** node-redis 6.2.1 rejects numeric keys. **Fix:** convert keys
-  with `String(...)` before `client.set`.
+- **Symptom:** On a backend image older than
+  `sha256:44a87d71dda575c0e062e1474eafbe5885169aeb0ce4c123b81f2b497dd1d7af`,
+  `POST /upload` crashes the backend container and writes no data. The error is
+  a `TypeError` such as `"arguments[1]" must be of type "string | Buffer"`.
+  **Cause:** node-redis 6.2.1 rejects numeric keys, and the rejection went
+  unhandled, so PostgreSQL was never reached. **Fix:** do not call `POST /upload`
+  on the old image. The source fix converts keys with `String(...)` before
+  `client.set`; it is in the digest above, which the repository pins. Merging the
+  pin does not change the cluster: the old image keeps running until the new
+  digest is deployed.
+- **Symptom:** `POST /upload` on digest `sha256:44a87d71...d7af` does not return
+  promptly, or returns 500. **Cause:** on this image an upload returns 200 and
+  loads 100 rows and 100 keys, and a repeat upload stays at 100 rows. A dependency
+  failure during an upload returns 500 and the process survives. How long that
+  500 takes depends on the failure, as measured with throwaway containers only:
+
+  | Failure | Time to 500 |
+  |---|---|
+  | PostgreSQL port closed | 147 ms |
+  | PostgreSQL stopped mid-upload | 535 ms |
+  | PostgreSQL password wrong | 460 ms |
+  | Redis port closed | 74 ms |
+  | Redis password wrong | 5928 ms |
+  | Redis host no longer resolving | about 64-67 s |
+
+  The Redis host case is the long wait, and its cluster behaviour is untested.
+  **Fix:** read the backend log and repair the dependency. Allow over a minute
+  before treating a Redis host failure as a hang; a client timeout shorter than
+  that fires before the 500. Bounding the wait is tracked in
+  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39).
+- **Symptom:** The backend exits with code 255, logs
+  `error on postgresql pool`, and the request gets no response, after PostgreSQL
+  stops. **Cause:** `pool.on("error")` in `images/backend/app/postgresql.js` calls
+  `process.exit(-1)`. A released client stays idle in the pool for about 10
+  seconds, and its dropped connection reaches that handler. This is in both the
+  old and the new image and also follows `GET /items`, so `POST /upload` is not
+  crash-free on either. It was reproduced in Docker. The cluster effect, restarted
+  replicas, is inferred and untested. **Fix:** none yet; tracked in
+  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39).
 - **Symptom:** `kubectl exec deployment/minishop-frontend` or a validator result
   comes from a legacy `frontend-*` Pod. **Cause:** the `minishop-frontend` Service and Deployment
   selectors use only `component=frontend` and `name=minishop`, which legacy
@@ -120,3 +155,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #30 Helm packaging record](./devlog/2026-09-28-helm-packaging.md)
 - [Issue #32 pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)
 - [Issue #36 item seeding record](./devlog/2026-11-02-minishop-item-seeding.md)
+- [Issue #44 backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md)
