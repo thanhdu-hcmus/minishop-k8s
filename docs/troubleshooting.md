@@ -117,8 +117,9 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   The Redis host case is the long wait, and its cluster behaviour is untested.
   **Fix:** read the backend log and repair the dependency. Allow over a minute
   before treating a Redis host failure as a hang; a client timeout shorter than
-  that fires before the 500. Bounding the wait is tracked in
-  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39).
+  that fires before the 500. The wait is bounded to about 2 s in
+  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), effective once
+  an image built with it is deployed.
 - **Symptom:** The backend exits with code 255, logs
   `error on postgresql pool`, and the request gets no response, after PostgreSQL
   stops. **Cause:** `pool.on("error")` in `images/backend/app/postgresql.js` calls
@@ -126,8 +127,27 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   seconds, and its dropped connection reaches that handler. This is in both the
   old and the new image and also follows `GET /items`, so `POST /upload` is not
   crash-free on either. It was reproduced in Docker. The cluster effect, restarted
-  replicas, is inferred and untested. **Fix:** none yet; tracked in
-  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39).
+  replicas, is inferred and untested. **Fix:** fixed in
+  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), effective once
+  deployed: the handler now logs `idle postgresql client error; the pool
+  discarded it` and the process keeps serving. Until an image built with #39 is
+  published, pinned, and deployed, the running image still exits.
+- **Symptom (image built with #39 only):** `/items`, the reviews route, or
+  `POST /upload` returns 503 or 500 with a JSON body such as
+  `{"error":"Items query failed","code":"57P01"}`. **Cause:** 503 means
+  PostgreSQL or Redis is unreachable, refusing service (for example a wrong
+  password), or timed out; 500 is any other failure, such as `42P01` before
+  seeding. `code` appears only for a PostgreSQL SQLSTATE. Reviews of an item with
+  no reviews key still return 200 with `{}`. **Fix:** for 503, check the
+  dependency and `GET /ready`, which names the failing check; `GET /live` stays
+  200. Waits are bounded by `REDIS_CONNECT_TIMEOUT_MS` (2000 ms) for the Redis
+  connection, `REDIS_COMMAND_TIMEOUT_MS` (2000 ms) for all Redis commands of a
+  request including their replies, `POSTGRES_QUERY_TIMEOUT` (5000 ms), and
+  `READINESS_TIMEOUT_MS` (2000 ms). In
+  Docker tests, `/ready` once reported Redis when only PostgreSQL was stopped,
+  because slow DNS failures held the libuv threadpool; treat the per-check detail
+  as a hint. The deployed image `sha256:44a87d71...` still returns the older
+  behaviour above and 404 on `/live` and `/ready`.
 - **Symptom:** `kubectl exec deployment/minishop-frontend` or a validator result
   comes from a legacy `frontend-*` Pod. **Cause:** the `minishop-frontend` Service and Deployment
   selectors use only `component=frontend` and `name=minishop`, which legacy
@@ -156,3 +176,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #32 pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)
 - [Issue #36 item seeding record](./devlog/2026-11-02-minishop-item-seeding.md)
 - [Issue #44 backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md)
+- [Issue #39 backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md)
