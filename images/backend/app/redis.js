@@ -28,6 +28,8 @@ const redisOptions = (environment = process.env) => {
     },
     // Reject commands while disconnected instead of queueing them indefinitely.
     disableOfflineQueue: true,
+    // node-redis applies this only while a command waits in its queue; once the
+    // command is written it is not timed. withClient bounds the reply wait.
     commandOptions: {
       timeout: positiveInteger(environment.REDIS_COMMAND_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS)
     }
@@ -50,12 +52,17 @@ const destroyQuietly = client => {
 
 // timeoutMs overrides both the connect and command timeouts, for callers such as
 // the readiness check that must finish inside a probe timeout.
-const createClient = async ({ timeoutMs } = {}) => {
+const clientOptionsFor = ({ timeoutMs } = {}) => {
   const options = redisOptions();
   if (timeoutMs) {
     options.socket.connectTimeout = timeoutMs;
     options.commandOptions = { timeout: timeoutMs };
   }
+  return options;
+};
+
+const createClient = async (clientOptions) => {
+  const options = clientOptionsFor(clientOptions);
   const client = redis.createClient(options);
 
   client.on("error", error => {
@@ -73,24 +80,30 @@ const createClient = async ({ timeoutMs } = {}) => {
   return client;
 };
 
+// Runs callback with a client used only for this request. The command timeout
+// bounds all of the callback's commands together, including the wait for a reply
+// to a command already written; on expiry the client is destroyed, which rejects
+// pending commands. The socket is closed on every path with destroy(), not
+// quit(): quit waits for a reply that a stalled server never sends.
 const withClient = async (callback, clientOptions) => {
+  const timeoutMs = clientOptionsFor(clientOptions).commandOptions.timeout;
   const client = await createClient(clientOptions);
 
   try {
-    return await callback(client);
+    return await withDeadline(
+      Promise.resolve().then(() => callback(client)),
+      timeoutMs,
+      `Redis command timed out after ${timeoutMs} ms`,
+      () => destroyQuietly(client)
+    );
   } finally {
     if (client.isOpen) {
-      try {
-        await withDeadline(client.quit(), DEFAULT_COMMAND_TIMEOUT_MS, "Redis quit timed out");
-      } catch (error) {
-        logger.warn({ err: error }, "redis quit failed; destroying the client");
-        destroyQuietly(client);
-      }
+      destroyQuietly(client);
     }
   }
 };
 
-// Resolves null when the item has no reviews key, so the route can return 404.
+// Resolves null when the item has no reviews key.
 const search = async itemId => withClient(client => client.get(itemId));
 
 // Readiness check: connect, authenticate, and PING within timeoutMs.
