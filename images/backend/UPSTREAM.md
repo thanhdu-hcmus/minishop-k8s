@@ -32,6 +32,9 @@ Each modified file carries a "Derived from ... Modified for ..." header.
   are bounded, and a readiness ping and SQLSTATE helper were added (#39).
 - `app/dependency.js` (new, #39): deadlines, timeout parsing, and the
   unavailable-versus-internal error classification.
+
+## Runtime notes
+
 `REDIS_PASSWORD` is optional. When it is non-empty, the Redis client sends it
 as the Redis password; when absent or empty, no password is configured, which
 preserves the upstream unauthenticated behavior.
