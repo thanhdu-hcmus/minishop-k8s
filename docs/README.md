@@ -31,3 +31,5 @@ scoped cleanup.
 25. [MiniShop operator guide record](./devlog/2026-09-28-minishop-operator-guide.md) — Issue #34 documentation scope and validation evidence.
 26. [MiniShop item seeding record](./devlog/2026-11-02-minishop-item-seeding.md) — Issue #36 upload, validator, and interim seed repair, with remaining gaps.
 27. [Backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md) — Issue #44 digest pin, pre-deploy `POST /upload` tests, and the gaps tracked in #39.
+28. [Backend dependency health decision](./decisions/0010-backend-dependency-health.md) — proposed T2 decision on process-only liveness, dependency readiness, 503/500 classification, and bounded timeouts.
+29. [Backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md) — Issue #39 idle-pool fix, error status codes, Redis bounds, `/live` and `/ready`, and Docker failure tests.

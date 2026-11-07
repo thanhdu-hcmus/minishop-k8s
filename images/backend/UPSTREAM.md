@@ -13,6 +13,25 @@ Redis v2 range has a high-severity advisory. This project adapts that client to
 the current Redis API, uses exact dependency versions, and regenerates the
 lockfile so `npm ci` is reproducible.
 
+## Modifications
+
+Each modified file carries a "Derived from ... Modified for ..." header.
+
+- `app/redis.js`: adapted to the Redis v6 client with optional
+  `REDIS_PASSWORD`, string keys for the review import (#43), and one
+  client per request with no reconnects, bounded connect and command waits,
+  and the socket closed with `destroy()` on every path (#39).
+- `index.js`: `POST /upload` waits for both imports and returns an error when
+  either fails (#43). PostgreSQL and Redis failures return 503 when the
+  dependency is unavailable and 500 otherwise, with no error text in the body;
+  `GET /live` (process only) and `GET /ready` (PostgreSQL and Redis) were
+  added; the special-offer loop no longer indexes past the results (#39).
+- `app/postgresql.js`: the import runs in one transaction with parameterized
+  inserts and releases or discards its client (#43). Idle pool errors are
+  logged instead of exiting the process, queries and the logging DNS lookup
+  are bounded, and a readiness ping and SQLSTATE helper were added (#39).
+- `app/dependency.js` (new, #39): deadlines, timeout parsing, and the
+  unavailable-versus-internal error classification.
 `REDIS_PASSWORD` is optional. When it is non-empty, the Redis client sends it
 as the Redis password; when absent or empty, no password is configured, which
 preserves the upstream unauthenticated behavior.

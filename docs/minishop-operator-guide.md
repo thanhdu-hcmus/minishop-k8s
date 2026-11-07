@@ -197,6 +197,29 @@ seed is data only: a rebuilt database needs the new image or another seed.
   [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), as is the Redis
   wait.
 
+**After #39 is deployed.** The #39 source fixes the idle-pool exit and changes
+error responses, but none of it applies until an image built with it is
+published, pinned, and deployed; everything above stays true until then. Once
+deployed:
+
+- `/items`, the reviews route, and `POST /upload` return 503 when PostgreSQL or
+  Redis is unreachable, refusing service, or timed out, and 500 for other
+  failures, with JSON `{"error": "...", "code": "<SQLSTATE>"}` (`code` only for
+  PostgreSQL errors). An unseeded table returns 500 with `42P01`;
+  `validate-app.sh` accepts both that and the old 200 form. Reviews of an item
+  with no reviews still return 200 with `{}`, as before.
+- The image serves `GET /live` (process only) and `GET /ready` (PostgreSQL and
+  Redis). The Kubernetes probes still use `/` and switch to these routes in the
+  same change that pins the new digest.
+- Timeouts are set by `REDIS_CONNECT_TIMEOUT_MS`, `REDIS_COMMAND_TIMEOUT_MS`,
+  `READINESS_TIMEOUT_MS` (default 2000 ms each) and `POSTGRES_QUERY_TIMEOUT`
+  (default 5000 ms). `REDIS_COMMAND_TIMEOUT_MS` bounds all Redis commands of
+  one request together, including the wait for a reply; when it expires the
+  per-request client is destroyed and its socket closed.
+- Once the probes switch, a Redis outage makes every backend Pod unready, which
+  also removes `/items`. See
+  [ADR 0010](./decisions/0010-backend-dependency-health.md).
+
 Known gaps: the `minishop-frontend` Service and Deployment selectors still
 overlap legacy frontend Pods, and `POST /upload` is unauthenticated and drops the
 table when called.
