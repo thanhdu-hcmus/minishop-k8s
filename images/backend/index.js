@@ -1,3 +1,10 @@
+/*
+ * Derived from Apache-2.0 kumahq/kuma-demo api/index.js at db9e133.
+ * Modified so POST /upload waits for both imports and reports failure (#43),
+ * PostgreSQL and Redis failures return 503 or 500, and /live and /ready
+ * exist (#39); see LICENSE and UPSTREAM.md.
+ */
+
 const redis = require("./app/redis");
 const postgresql = require("./app/postgresql");
 const { isDependencyUnavailable, positiveInteger, withDeadline } = require("./app/dependency");

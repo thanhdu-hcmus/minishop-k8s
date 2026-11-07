@@ -1,3 +1,10 @@
+/*
+ * Derived from Apache-2.0 kumahq/kuma-demo api/app/postgresql.js at db9e133.
+ * Modified for a transactional, parameterized import (#43), and for logging idle
+ * pool errors instead of exiting, bounded query and lookup waits, the SQLSTATE
+ * helper, and a readiness ping (#39); see ../LICENSE and ../UPSTREAM.md.
+ */
+
 const items = require("../db/items.json");
 const { Pool, DatabaseError } = require("pg");
 const { positiveInteger, withDeadline } = require("./dependency");
