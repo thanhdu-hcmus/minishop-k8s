@@ -1,5 +1,6 @@
 const redis = require("./app/redis");
 const postgresql = require("./app/postgresql");
+const { isDependencyUnavailable } = require("./app/dependency");
 const promBundle = require("express-prom-bundle");
 const pino = require('pino');
 const logger = pino({ name: 'kuma-backend', level: process.env.PINO_LOG_LEVEL || 'info' });
@@ -27,6 +28,18 @@ app.use((req, res, next) => {
   next();
 });
 
+// 503 when PostgreSQL or Redis is unreachable or refusing service, 500 for any
+// other failure. The body never carries the error message or stack; only a
+// PostgreSQL SQLSTATE (for example 42P01, table missing before seeding).
+const sendDependencyError = (res, error, message) => {
+  const body = { error: message };
+  const code = postgresql.sqlState(error);
+  if (code) {
+    body.code = code;
+  }
+  res.status(isDependencyUnavailable(error) ? 503 : 500).json(body);
+};
+
 app.get("/", (req, res) => {
   res.set(req.headers);
   logger.info('GET /');
@@ -42,63 +55,58 @@ app.post("/upload", async (req, res) => {
     res.end("Mock data updated in Redis and PostgreSQL!");
   } catch (err) {
     logger.error({ err }, 'mock data import failed');
-    res.status(500).end("Mock data import failed");
+    sendDependencyError(res, err, "Mock data import failed");
   }
 });
 
 app.get("/items", async (req, res) => {
-  await logger.info('get on /items');
-  await postgresql
-    .search(req.query.q)
-    .then(async (results) => {
-      if (results === undefined) {
-        logger.error('result is undefined');
-      }
-      if (results.rows === undefined) {
-        logger.error('result.rows is undefined');
-      }
-      if (results.rows.length === 0) {
-        logger.warn('no results found');
-      } else {
-        logger.info('row count: ' + results.rowCount);
-      }
-      if (specialOffers == true) {
-        res.send(addOffer(results.rows));
-      } else {
-        res.send(results.rows);
-      }
-    })
-    .catch((err) => {
-      logger.error('catch err: ' + err);;
-      res.send(err);
-    });
+  logger.info('get on /items');
+  // Express 4 does not catch rejected async handlers, so every failure in this
+  // handler, including a malformed result, must be caught here.
+  try {
+    const results = await postgresql.search(req.query.q);
+    const rows = results.rows;
+    if (rows.length === 0) {
+      logger.warn('no results found');
+    } else {
+      logger.info('row count: ' + results.rowCount);
+    }
+    if (specialOffers == true) {
+      res.send(addOffer(rows));
+    } else {
+      res.send(rows);
+    }
+  } catch (err) {
+    logger.error({ err }, 'items query failed');
+    sendDependencyError(res, err, "Items query failed");
+  }
 });
 
 const addOffer = (arr) => {
   let items = arr;
+  // TOTAL_OFFER larger than the result set must not index past the end.
+  const offers = Math.min(Number(totalOffers) || 0, items.length);
 
-  if (items.length == 0) {
-    return items;
-  }
-
-  for (i = 0; i < totalOffers; i++) {
+  for (let i = 0; i < offers; i++) {
     items[i].data.specialOffer = true;
   }
 
   return items;
 };
 
-app.get("/items/:itemIndexId/reviews", (req, res) => {
+app.get("/items/:itemIndexId/reviews", async (req, res) => {
   logger.info('get on /items/.../reviews');
-  redis
-    .search(`${req.params.itemIndexId}`, req.headers)
-    .then((results) => {
-      res.send(results);
-    })
-    .catch((err) => {
-      logger.error('catch err: ' + err);;
-      res.send(err);
-    });
+  try {
+    const results = await redis.search(`${req.params.itemIndexId}`);
+    if (results == null) {
+      res.status(404).json({ error: "Item reviews not found" });
+      return;
+    }
+    res.send(results);
+  } catch (err) {
+    logger.error({ err }, 'reviews query failed');
+    sendDependencyError(res, err, "Reviews query failed");
+  }
 });
 
 if (require.main === module) {

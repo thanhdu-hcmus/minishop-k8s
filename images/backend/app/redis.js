@@ -90,15 +90,8 @@ const withClient = async (callback, clientOptions) => {
   }
 };
 
-const search = async itemId => {
-  const result = await withClient(client => client.get(itemId));
-
-  if (result == null) {
-    return new Error("Item does not exist");
-  }
-
-  return result;
-};
+// Resolves null when the item has no reviews key, so the route can return 404.
+const search = async itemId => withClient(client => client.get(itemId));
 
 const importData = async () => {
   await withClient(client =>

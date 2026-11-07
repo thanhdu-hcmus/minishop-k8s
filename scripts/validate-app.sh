@@ -47,10 +47,12 @@ const getItems = async () => {
 };
 const hasItems = items =>
   items.status === 200 && Array.isArray(items.body) && items.body.length > 0;
+// A missing table (SQLSTATE 42P01) returns 500 since #39; images before it
+// returned 200 with the raw error, so accept both until the new digest is pinned.
 const isUnseeded = items =>
-  items.status === 200 &&
-  ((Array.isArray(items.body) && items.body.length === 0) ||
-    (items.body !== undefined && items.body.code === "42P01"));
+  (items.status === 200 && Array.isArray(items.body) && items.body.length === 0) ||
+  ((items.status === 200 || items.status === 500) &&
+    items.body !== undefined && items.body !== null && items.body.code === "42P01");
 (async () => {
   let items = await getItems();
   if (hasItems(items)) {
