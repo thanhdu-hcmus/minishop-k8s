@@ -19,9 +19,11 @@ const dnsOptions = {
   all: true,
 };
 
-pool.on("error", (err, clients) => {
-  logger.error('error on postgresql pool', err);
-  process.exit(-1);
+// pg-pool emits 'error' when an idle pooled connection drops, for example when
+// PostgreSQL restarts. The pool has already removed that client and opens a new
+// one on the next query, so log it and keep serving instead of exiting.
+pool.on("error", (err) => {
+  logger.error({ err }, 'idle postgresql client error; the pool discarded it');
 });
 
 const search = async (itemName) => {
@@ -80,6 +82,7 @@ const importData = async () => {
 
 
 module.exports = Object.assign({
+  pool,
   search,
   importData,
 });
