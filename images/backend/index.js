@@ -1,6 +1,6 @@
 const redis = require("./app/redis");
 const postgresql = require("./app/postgresql");
-const { isDependencyUnavailable } = require("./app/dependency");
+const { isDependencyUnavailable, positiveInteger, withDeadline } = require("./app/dependency");
 const promBundle = require("express-prom-bundle");
 const pino = require('pino');
 const logger = pino({ name: 'kuma-backend', level: process.env.PINO_LOG_LEVEL || 'info' });
@@ -46,6 +46,39 @@ app.get("/", (req, res) => {
   res.send(
     "Hello World! Marketplace with sales and reviews made with <3 by the OCTO team at Kong Inc."
   );
+});
+
+// Liveness: answers while the process can serve HTTP. It never checks PostgreSQL
+// or Redis, so a dependency outage takes Pods out of the Service through
+// readiness instead of restarting every replica at once.
+app.get("/live", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Readiness: PostgreSQL and Redis must both answer within READINESS_TIMEOUT_MS
+// (default 2000, below the 3 s probe timeout). Checks run in parallel.
+app.get("/ready", async (req, res) => {
+  const timeoutMs = positiveInteger(process.env.READINESS_TIMEOUT_MS, 2000);
+  const dependencies = { postgresql, redis };
+  const names = Object.keys(dependencies);
+  const outcomes = await Promise.allSettled(
+    names.map(name =>
+      withDeadline(
+        dependencies[name].ping(timeoutMs),
+        timeoutMs,
+        `${name} readiness check timed out after ${timeoutMs} ms`
+      )
+    )
+  );
+  const checks = {};
+  outcomes.forEach((outcome, index) => {
+    checks[names[index]] = outcome.status === "fulfilled" ? "ok" : "unavailable";
+    if (outcome.status === "rejected") {
+      logger.warn({ err: outcome.reason, dependency: names[index] }, 'readiness check failed');
+    }
+  });
+  const ready = Object.values(checks).every(check => check === "ok");
+  res.status(ready ? 200 : 503).json({ status: ready ? "ok" : "unavailable", checks });
 });
 
 app.post("/upload", async (req, res) => {

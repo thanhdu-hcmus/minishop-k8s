@@ -49,6 +49,15 @@ const search = async (itemName) => {
   );
 };
 
+// Readiness check: a round trip that needs a connection but no table, so an
+// unseeded database is still ready to accept POST /upload.
+const ping = async (timeoutMs) =>
+  withDeadline(
+    pool.query({ text: "SELECT 1", query_timeout: timeoutMs }),
+    timeoutMs,
+    `PostgreSQL readiness check timed out after ${timeoutMs} ms`
+  );
+
 const importData = async () => {
   const client = await pool.connect();
   // pg-pool detaches its idle listener at checkout, so without this an 'error' event
@@ -98,5 +107,6 @@ module.exports = Object.assign({
   pool,
   sqlState,
   search,
+  ping,
   importData,
 });

@@ -93,6 +93,9 @@ const withClient = async (callback, clientOptions) => {
 // Resolves null when the item has no reviews key, so the route can return 404.
 const search = async itemId => withClient(client => client.get(itemId));
 
+// Readiness check: connect, authenticate, and PING within timeoutMs.
+const ping = async timeoutMs => withClient(client => client.ping(), { timeoutMs });
+
 const importData = async () => {
   await withClient(client =>
     Promise.all(items.map(item => client.set(String(item.index), JSON.stringify(item.reviews))))
@@ -103,5 +106,6 @@ module.exports = {
   createClient,
   redisOptions,
   search,
+  ping,
   importData
 };
