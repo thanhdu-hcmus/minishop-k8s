@@ -12,7 +12,11 @@ const request = async (method, path) => {
 
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, { method });
-    return { status: response.status, text: await response.text() };
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      text: await response.text()
+    };
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -122,12 +126,15 @@ test("GET /items/:id/reviews returns the stored reviews", async t => {
   assert.deepEqual(search.mock.calls[0].arguments, ["7"]);
 });
 
-test("GET /items/:id/reviews returns 404 when the item has no reviews", async t => {
+test("GET /items/:id/reviews keeps the pre-#39 200 {} when the item has no reviews", async t => {
   t.mock.method(redis, "search", async () => null);
 
   const response = await request("GET", "/items/999/reviews");
 
-  assert.equal(response.status, 404);
+  // origin/main at 8b4bffd answered exactly this.
+  assert.equal(response.status, 200);
+  assert.equal(response.contentType, "application/json; charset=utf-8");
+  assert.equal(response.text, "{}");
 });
 
 test("GET /items/:id/reviews returns 503 when Redis is unreachable or rejects the password", async t => {

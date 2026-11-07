@@ -132,7 +132,9 @@ app.get("/items/:itemIndexId/reviews", async (req, res) => {
   try {
     const results = await redis.search(`${req.params.itemIndexId}`);
     if (results == null) {
-      res.status(404).json({ error: "Item reviews not found" });
+      // Unchanged from before #39: 200 with {}. The pinned frontend shows an
+      // endless spinner on a non-2xx here, so a 404 needs a frontend change first.
+      res.json({});
       return;
     }
     res.send(results);
