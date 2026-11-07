@@ -33,3 +33,4 @@ scoped cleanup.
 27. [Backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md) — Issue #44 digest pin, pre-deploy `POST /upload` tests, and the gaps tracked in #39.
 28. [Backend dependency health decision](./decisions/0010-backend-dependency-health.md) — proposed T2 decision on process-only liveness, dependency readiness, 503/500 classification, and bounded timeouts.
 29. [Backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md) — Issue #39 idle-pool fix, error status codes, Redis bounds, `/live` and `/ready`, and Docker failure tests.
+30. [Backend health image pin record](./devlog/2026-11-08-health-image-pin.md) — Issue #47 pin of the #46 image, `/live` and `/ready` probes, 500-only unseeded check, and Docker health tests.
