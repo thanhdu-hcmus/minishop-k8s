@@ -54,3 +54,12 @@ resources:
 credentials:
   dataSecretName: minishop-data-credentials
   appSecretName: minishop-app-credentials
+
+# Routes http://<host>/ to Service minishop-frontend through ingress-nginx
+# (scripts/deploy-ingress-nginx.sh). The legacy Ingress "minishop-frontend"
+# claims the same host and path, so ingress-nginx admission rejects this one
+# until the legacy Ingress is deleted; see docs/legacy-retirement-runbook.md.
+ingress:
+  enabled: true
+  className: nginx
+  host: minishop.local

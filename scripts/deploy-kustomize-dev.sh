@@ -49,6 +49,7 @@ fi
 
 "$SCRIPT_DIR/validate-kustomize.sh"
 require_context
+require_no_conflicting_ingress
 
 if [[ -n "${MINISHOP_POSTGRES_PASSWORD:-}" ]]; then
   kubectl_for_minishop apply \

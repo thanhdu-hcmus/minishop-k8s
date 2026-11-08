@@ -30,4 +30,17 @@ if helm_cli_for_minishop template minishop /chart --namespace webapp \
   exit 1
 fi
 
+if helm_cli_for_minishop template minishop /chart --namespace webapp \
+  --set ingress.host=Not_A_Host >/dev/null 2>&1; then
+  printf '%s\n' 'Chart schema accepted an invalid Ingress host.' >&2
+  exit 1
+fi
+
+without_ingress=$(helm_cli_for_minishop template minishop /chart --namespace webapp \
+  --set ingress.enabled=false)
+if grep -Eq '^kind: Ingress$|name: minishop-frontend-from-ingress$' <<<"$without_ingress"; then
+  printf '%s\n' 'Disabling the Ingress still rendered its Ingress or NetworkPolicy.' >&2
+  exit 1
+fi
+
 printf '%s\n' 'Helm defaults, dev, and prod values lint, render, and pass schema validation.'

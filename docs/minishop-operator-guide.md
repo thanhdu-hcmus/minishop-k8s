@@ -27,6 +27,42 @@ KUBECONFIG=./.kube/config kubectl --context kind-learn get nodes
 or refreshes its kubeconfig if it exists. This changes local cluster state; it
 does not install the application.
 
+## Reach minishop.local on a fresh cluster
+
+Added by Issue #38. This sequence was assembled from the scripts; it has not
+been run end to end on a newly created cluster. Every step changes local state.
+
+1. `bash scripts/create-cluster.sh` creates `learn` from
+   `cluster/kind-config.yaml`. The control-plane node gets the label
+   `ingress-ready=true` and maps container ports 80 and 443 to host ports 80
+   and 443. No `listenAddress` is set, so kind uses its default bind address
+   (all interfaces). Creation fails if another process already holds host
+   port 80 or 443. If `learn` already exists, the script only refreshes the
+   kubeconfig; it does not add the label to an existing node.
+2. `bash scripts/deploy-ingress-nginx.sh` installs the kind provider manifest
+   for ingress-nginx `controller-v1.12.4` after a SHA-256 check, waits for the
+   controller rollout, and waits up to 180 s for the admission webhook CA
+   bundle. It stops if no node carries `ingress-ready=true` and prints the
+   `kubectl label node` command for an existing cluster (owner approval
+   needed).
+3. Deploy the data and application runtime with one packaging path, after the
+   prerequisites listed under [Deployment choices](#deployment-choices):
+   `bash scripts/deploy-kustomize-dev.sh` or `bash scripts/deploy-helm.sh`.
+   Both create Ingress `webapp/minishop` (class `nginx`, host
+   `minishop.local`, path `/`, Service `minishop-frontend`). The older
+   `scripts/deploy-app.sh` does not apply `manifests/20-webapp/ingress.yaml`.
+4. Add `127.0.0.1 minishop.local` to the hosts file of the machine running the
+   browser (on Windows, `C:\Windows\System32\drivers\etc\hosts`).
+5. Open `http://minishop.local`. No port-forward is needed. Plain HTTP only;
+   TLS is not configured.
+
+On the existing `kind-learn` cluster, the hand-applied Ingress
+`webapp/minishop-frontend` still claims `minishop.local`. Until step 2 of the
+[legacy retirement runbook](./legacy-retirement-runbook.md) deletes it,
+`deploy-helm.sh` and `deploy-kustomize-dev.sh` stop at a preflight check (see
+[troubleshooting](./troubleshooting.md)). That cluster already has the node
+label and the controller and is not recreated.
+
 ## Deployment choices
 
 Use one runtime packaging path at a time. The Helm chart and the Kustomize

@@ -11,9 +11,12 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+  # part-of keeps the legacy frontend Pods, which share component and name,
+  # out of the endpoints. The Deployment selector below is immutable.
   selector:
     app.kubernetes.io/component: frontend
     app.kubernetes.io/name: minishop
+    app.kubernetes.io/part-of: minishop
 ---
 apiVersion: apps/v1
 kind: Deployment
