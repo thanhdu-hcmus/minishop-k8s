@@ -155,70 +155,47 @@ conditionally read-only. It probes through the Pod resolved by the
   and recreates the table, then rechecks both routes.
 - Any other response: it fails without uploading.
 
-The frontend root check is distinct from database-backed item behavior, and
-`/items` and the reviews route can return HTTP 200 for a backend error, so
-inspect the response body. The item route first returned `28P01`
-(authentication failed), then `42P01` (table absent) after the owner aligned the
-role password. Since the Issue #36 interim seed it has returned 100 items.
-See [troubleshooting](./troubleshooting.md) and the
+The frontend root check is distinct from database-backed item behavior, so
+inspect the response body as well as the status. The item route first returned
+`28P01` (authentication failed), then `42P01` (table absent) after the owner
+aligned the role password; it was seeded during Issue #36. See
+[troubleshooting](./troubleshooting.md) and the
 [Issue #36 record](./devlog/2026-11-02-minishop-item-seeding.md).
 
-**Interim state.** The repository pins backend digest
-`sha256:44a87d71dda575c0e062e1474eafbe5885169aeb0ce4c123b81f2b497dd1d7af`, built
-from `4e7b847` (#43). A pin is not a deployment: the cluster keeps running the old
-digest until the new one is deployed. This read-only command shows which digest
-the Deployment requests:
+The backend image is pinned to
+`sha256:599480a80f5fa26755cf368c0b13fdc9406580421477e8970981c39fc2f35114`
+(tag `sha-3925f188dc5103386881ae7c7a64ac300d8d8f68`, built from #46). A pin
+applies only after the cluster is deployed from `main` (`helm upgrade`). This
+read-only command shows which digest the Deployment requests:
 
 ```bash
-KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
-  get deployment minishop-backend \
-  -o 'jsonpath={.spec.template.spec.containers[0].image}'
+KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp   get deployment minishop-backend   -o 'jsonpath={.spec.template.spec.containers[0].image}'
 ```
 
-While it shows any other digest, do not call `POST /upload`. That includes
-running the validator if the items are ever empty or the table is absent, because
-it would then upload. The cluster was seeded once (100 rows, 100 Redis keys). The
-seed is data only: a rebuilt database needs the new image or another seed.
-
-`POST /upload` behaves differently on each image:
-
-- **Old image:** it crashes the backend container and writes no data.
-- **New image, tested only with throwaway containers:** it returns 200 and loads
-  100 rows and 100 keys, and a repeat upload stays at 100 rows. A dependency
-  failure during an upload returns 500 and the process survives. Most failures
-  returned in under 6 seconds, but a Redis host that no longer resolves took about
-  64-67 seconds; its cluster behaviour is untested. Timings are in
-  [troubleshooting](./troubleshooting.md).
-- **Both images:** `POST /upload` is not crash-free. If PostgreSQL stops within
-  about 10 seconds of the last use, the pool's error handler calls
-  `process.exit(-1)`, so the backend exits 255 and the request gets no response.
-  This was reproduced in Docker. The cluster effect, restarted replicas, is
-  inferred and untested. It is tracked in
-  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), as is the Redis
-  wait.
-
-**After #39 is deployed.** The #39 source fixes the idle-pool exit and changes
-error responses, but none of it applies until an image built with it is
-published, pinned, and deployed; everything above stays true until then. Once
-deployed:
+On this image:
 
 - `/items`, the reviews route, and `POST /upload` return 503 when PostgreSQL or
   Redis is unreachable, refusing service, or timed out, and 500 for other
   failures, with JSON `{"error": "...", "code": "<SQLSTATE>"}` (`code` only for
-  PostgreSQL errors). An unseeded table returns 500 with `42P01`;
-  `validate-app.sh` accepts both that and the old 200 form. Reviews of an item
-  with no reviews still return 200 with `{}`, as before.
-- The image serves `GET /live` (process only) and `GET /ready` (PostgreSQL and
-  Redis). The Kubernetes probes still use `/` and switch to these routes in the
-  same change that pins the new digest.
+  PostgreSQL errors). An unseeded table returns 500 with `42P01`, the only
+  unseeded form `validate-app.sh` accepts; the 200-with-`42P01` form of older
+  images now fails the validator without uploading. Reviews of an item with no
+  reviews still return 200 with `{}`.
+- `POST /upload` returns 200 and loads 100 rows and 100 Redis keys; a repeat
+  upload stays at 100 rows. It is unauthenticated and drops the table first.
+- The liveness probe uses `GET /live` (process only) and the readiness probe
+  uses `GET /ready` (PostgreSQL and Redis), in both the chart and the raw
+  manifest. Probe timings are unchanged.
 - Timeouts are set by `REDIS_CONNECT_TIMEOUT_MS`, `REDIS_COMMAND_TIMEOUT_MS`,
   `READINESS_TIMEOUT_MS` (default 2000 ms each) and `POSTGRES_QUERY_TIMEOUT`
   (default 5000 ms). `REDIS_COMMAND_TIMEOUT_MS` bounds all Redis commands of
-  one request together, including the wait for a reply; when it expires the
-  per-request client is destroyed and its socket closed.
-- Once the probes switch, a Redis outage makes every backend Pod unready, which
-  also removes `/items`. See
-  [ADR 0010](./decisions/0010-backend-dependency-health.md).
+  one request together, including the wait for a reply.
+- A Redis or PostgreSQL outage makes every backend Pod unready, which also
+  removes `/items`; liveness stays 200, so Pods are not restarted. In Docker
+  tests `/ready` answered 503 in about 2 s and recovered about 1 s after the
+  dependency returned. See
+  [ADR 0010](./decisions/0010-backend-dependency-health.md) and the
+  [Issue #47 record](./devlog/2026-11-08-health-image-pin.md).
 
 Known gaps: the `minishop-frontend` Service and Deployment selectors still
 overlap legacy frontend Pods, and `POST /upload` is unauthenticated and drops the

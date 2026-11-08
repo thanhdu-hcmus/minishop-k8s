@@ -40,8 +40,9 @@ to clients and to Kubernetes. Status is proposed; the owner accepts it on merge.
 - **Unchanged contract.** An item with no reviews still returns 200 with `{}`,
   as before #39; the pinned frontend shows an endless spinner on a non-2xx.
 - **Rollout order.** The probes switch to `/live` and `/ready` only together with
-  the pin of an image that serves them; the pinned image at the time of writing
-  answers 404 on both.
+  the pin of an image that serves them. Issue #47 shipped both in one change:
+  digest `sha256:599480a8...5114` (built from #46) and the probe paths in the
+  chart and the raw manifest.
 
 ## Rationale
 Restarting every replica because a shared dependency is down does not repair the

@@ -84,70 +84,47 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   and ask the credential owner to align the role password. Do not delete the PVC
   or alter credentials outside an approved scope. The owner resolved this case
   during Issue #36; the exact steps are not recorded.
-- **Symptom:** `GET /items?q=` returns HTTP 200 with error code `42P01`, and the
+- **Symptom:** `GET /items?q=` returns HTTP 500 with code `42P01`, and the
   reviews route returns an empty object. **Cause:** the `marketitems` table and
-  Redis keys were never seeded. **Fix:** seed through `POST /upload` only once
-  the digest `sha256:44a87d71...d7af` is deployed. Until then, follow the
-  [interim restriction](./minishop-operator-guide.md#inspect-and-validate).
-- **Symptom:** On a backend image older than
-  `sha256:44a87d71dda575c0e062e1474eafbe5885169aeb0ce4c123b81f2b497dd1d7af`,
-  `POST /upload` crashes the backend container and writes no data. The error is
-  a `TypeError` such as `"arguments[1]" must be of type "string | Buffer"`.
-  **Cause:** node-redis 6.2.1 rejects numeric keys, and the rejection went
-  unhandled, so PostgreSQL was never reached. **Fix:** do not call `POST /upload`
-  on the old image. The source fix converts keys with `String(...)` before
-  `client.set`; it is in the digest above, which the repository pins. Merging the
-  pin does not change the cluster: the old image keeps running until the new
-  digest is deployed.
-- **Symptom:** `POST /upload` on digest `sha256:44a87d71...d7af` does not return
-  promptly, or returns 500. **Cause:** on this image an upload returns 200 and
-  loads 100 rows and 100 keys, and a repeat upload stays at 100 rows. A dependency
-  failure during an upload returns 500 and the process survives. How long that
-  500 takes depends on the failure, as measured with throwaway containers only:
-
-  | Failure | Time to 500 |
-  |---|---|
-  | PostgreSQL port closed | 147 ms |
-  | PostgreSQL stopped mid-upload | 535 ms |
-  | PostgreSQL password wrong | 460 ms |
-  | Redis port closed | 74 ms |
-  | Redis password wrong | 5928 ms |
-  | Redis host no longer resolving | about 64-67 s |
-
-  The Redis host case is the long wait, and its cluster behaviour is untested.
-  **Fix:** read the backend log and repair the dependency. Allow over a minute
-  before treating a Redis host failure as a hang; a client timeout shorter than
-  that fires before the 500. The wait is bounded to about 2 s in
-  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), effective once
-  an image built with it is deployed.
-- **Symptom:** The backend exits with code 255, logs
-  `error on postgresql pool`, and the request gets no response, after PostgreSQL
-  stops. **Cause:** `pool.on("error")` in `images/backend/app/postgresql.js` calls
-  `process.exit(-1)`. A released client stays idle in the pool for about 10
-  seconds, and its dropped connection reaches that handler. This is in both the
-  old and the new image and also follows `GET /items`, so `POST /upload` is not
-  crash-free on either. It was reproduced in Docker. The cluster effect, restarted
-  replicas, is inferred and untested. **Fix:** fixed in
-  [#39](https://github.com/thanhdu-hcmus/minishop-k8s/issues/39), effective once
-  deployed: the handler now logs `idle postgresql client error; the pool
-  discarded it` and the process keeps serving. Until an image built with #39 is
-  published, pinned, and deployed, the running image still exits.
-- **Symptom (image built with #39 only):** `/items`, the reviews route, or
-  `POST /upload` returns 503 or 500 with a JSON body such as
-  `{"error":"Items query failed","code":"57P01"}`. **Cause:** 503 means
-  PostgreSQL or Redis is unreachable, refusing service (for example a wrong
-  password), or timed out; 500 is any other failure, such as `42P01` before
-  seeding. `code` appears only for a PostgreSQL SQLSTATE. Reviews of an item with
-  no reviews key still return 200 with `{}`. **Fix:** for 503, check the
-  dependency and `GET /ready`, which names the failing check; `GET /live` stays
-  200. Waits are bounded by `REDIS_CONNECT_TIMEOUT_MS` (2000 ms) for the Redis
-  connection, `REDIS_COMMAND_TIMEOUT_MS` (2000 ms) for all Redis commands of a
-  request including their replies, `POSTGRES_QUERY_TIMEOUT` (5000 ms), and
-  `READINESS_TIMEOUT_MS` (2000 ms). In
-  Docker tests, `/ready` once reported Redis when only PostgreSQL was stopped,
-  because slow DNS failures held the libuv threadpool; treat the per-check detail
-  as a hint. The deployed image `sha256:44a87d71...` still returns the older
-  behaviour above and 404 on `/live` and `/ready`.
+  Redis keys were never seeded. **Fix:** run `bash scripts/validate-app.sh`,
+  which calls `POST /upload` for this form only, or call `POST /upload` directly;
+  it loads 100 rows and 100 keys. Images older than #39 answered 200 with
+  `42P01`; the validator now fails on that form without uploading, which means
+  an old image is still deployed.
+- **Symptom (historical, images before `sha256:44a87d71...d7af`):**
+  `POST /upload` crashed the backend container with a `TypeError` such as
+  `"arguments[1]" must be of type "string | Buffer"`. **Cause:** node-redis
+  6.2.1 rejected numeric keys. **Fix:** fixed in #43 by converting keys with
+  `String(...)`; deploy the current pin.
+- **Symptom (historical, images before #39):** the backend exited with code 255
+  and logged `error on postgresql pool` after PostgreSQL stopped, or an upload
+  waited about 64-67 s when the Redis host no longer resolved. **Cause:**
+  `pool.on("error")` called `process.exit(-1)`, and Redis waits were unbounded.
+  **Fix:** fixed in #39; the handler now logs `idle postgresql client error; the
+  pool discarded it` and Redis waits are bounded to about 2 s. Deploy the current
+  pin.
+- **Symptom:** `/items`, the reviews route, or `POST /upload` returns 503 or 500
+  with a JSON body such as `{"error":"Items query failed","code":"57P01"}`, or
+  backend Pods turn unready. **Cause:** 503 means PostgreSQL or Redis is
+  unreachable, refusing service (for example a wrong password), or timed out; 500
+  is any other failure, such as `42P01` before seeding. `code` appears only for a
+  PostgreSQL SQLSTATE. The readiness probe calls `GET /ready`, so a dependency
+  outage removes every Pod from the Service. **Fix:** check the dependency and
+  `GET /ready`, which names the failing check; `GET /live` stays 200 and Pods are
+  not restarted. Waits are bounded by `REDIS_CONNECT_TIMEOUT_MS` (2000 ms),
+  `REDIS_COMMAND_TIMEOUT_MS` (2000 ms), `POSTGRES_QUERY_TIMEOUT` (5000 ms), and
+  `READINESS_TIMEOUT_MS` (2000 ms). In Docker tests, `/ready` once reported Redis
+  when only PostgreSQL was stopped, because slow DNS failures held the libuv
+  threadpool; treat the per-check detail as a hint.
+- **Symptom:** backend Pods fail their probes with 404 on `/live` or `/ready`.
+  **Cause:** the running image predates #46; `sha256:44a87d71...` has no health
+  routes. **Fix:** deploy from `main` (`helm upgrade`) so the Deployment runs
+  `sha256:599480a8...5114`. The probe paths and the pin ship together in #47.
+- **Symptom:** a Docker health test gets an nginx 404 on port 80 instead of a
+  backend response. **Cause:** the test read the backend's published port as
+  empty and fell through to another service on port 80. **Fix:** call the backend
+  from a client container on the same Docker network. Seen during Issue #47; no
+  product defect.
 - **Symptom:** `kubectl exec deployment/minishop-frontend` or a validator result
   comes from a legacy `frontend-*` Pod. **Cause:** the `minishop-frontend` Service and Deployment
   selectors use only `component=frontend` and `name=minishop`, which legacy

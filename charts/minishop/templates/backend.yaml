@@ -81,9 +81,10 @@ spec:
                   name: {{ .Values.credentials.appSecretName }}
             - name: REDIS_PORT
               value: "6379"
+          # Liveness is process-only; readiness checks PostgreSQL and Redis.
           livenessProbe:
             httpGet:
-              path: /
+              path: /live
               port: http
             failureThreshold: 3
             initialDelaySeconds: 30
@@ -91,7 +92,7 @@ spec:
             timeoutSeconds: 3
           readinessProbe:
             httpGet:
-              path: /
+              path: /ready
               port: http
             failureThreshold: 3
             initialDelaySeconds: 10

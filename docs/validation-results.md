@@ -340,7 +340,8 @@ scope. No dependencies, CI, storage, credentials, or HPA settings were changed.
 > **Update (Issue #36, 2026-11-02):** the `validate-app.sh` statement above
 > describes the script as of 2026-09-28. It now calls `POST /upload` only for an
 > empty item list or `42P01`, and skips it when items exist. The interim
-> restriction on `POST /upload` is in the
+> restriction on `POST /upload` ended with the 2026-11-07 deploy of #45; since
+> Issue #47 only the 500-with-`42P01` form counts as unseeded. See the
 > [operator guide](./minishop-operator-guide.md#inspect-and-validate).
 
 The cluster uses Kind's `kindnet`, which does not enforce NetworkPolicies; the
