@@ -33,3 +33,6 @@ scoped cleanup.
 27. [Backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md) — Issue #44 digest pin, pre-deploy `POST /upload` tests, and the gaps tracked in #39.
 28. [Backend dependency health decision](./decisions/0010-backend-dependency-health.md) — proposed T2 decision on process-only liveness, dependency readiness, 503/500 classification, and bounded timeouts.
 29. [Backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md) — Issue #39 idle-pool fix, error status codes, Redis bounds, `/live` and `/ready`, and Docker failure tests.
+31. [Ingress ownership and legacy retirement decision](./decisions/0011-ingress-ownership-and-legacy-retirement.md) — proposed T2 decision on the chart-owned Ingress, exact frontend selectors, ingress-nginx and MetalLB ownership, and deferred data retention.
+32. [Legacy retirement runbook](./legacy-retirement-runbook.md) — proposed, owner-approved-per-step order for retiring the hand-applied legacy objects; not yet run.
+33. [Ingress ownership record](./devlog/2026-11-08-ingress-ownership.md) — Issue #38 Ingress, selectors, pinned ingress-nginx path, preflight, and read-only verification.
