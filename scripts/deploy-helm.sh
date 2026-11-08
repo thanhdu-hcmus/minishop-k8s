@@ -23,6 +23,7 @@ esac
 require_helm_prerequisites
 require_helm_cluster
 require_runtime_prerequisites
+require_no_conflicting_ingress
 helm_release=$(helm_for_minishop list --filter '^minishop$' --short --namespace webapp)
 if [[ -z "$helm_release" ]]; then
   require_kustomize_handoff

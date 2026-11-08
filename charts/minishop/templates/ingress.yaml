@@ -1,0 +1,55 @@
+{{- if .Values.ingress.enabled }}
+# Named "minishop", not "minishop-frontend": the legacy, non-Helm Ingress
+# "minishop-frontend" would otherwise fail Helm's ownership check.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: minishop
+  namespace: webapp
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/part-of: minishop
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minishop-frontend
+                port:
+                  name: http
+---
+# minishop-default-deny blocks all ingress to MiniShop Pods; admit only the
+# ingress-nginx controller, and only on the frontend container port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minishop-frontend-from-ingress
+  namespace: webapp
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/part-of: minishop
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/instance: ingress-nginx
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}

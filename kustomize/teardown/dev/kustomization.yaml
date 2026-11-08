@@ -7,3 +7,4 @@ resources:
   - ../../../manifests/20-webapp/backend.yaml
   - ../../../manifests/20-webapp/frontend.yaml
   - ../../../manifests/20-webapp/networkpolicy.yaml
+  - ../../../manifests/20-webapp/ingress.yaml
