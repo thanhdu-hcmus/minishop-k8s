@@ -20,8 +20,9 @@ for command_name in curl kubectl sha256sum; do
   }
 done
 
-# v1.12.4 matches the controller already running in kind-learn. Upstream
-# archived kubernetes/ingress-nginx in March 2026; see ADR 0011 before bumping.
+# v1.12.4 is kept to match the controller running in kind-learn. It is four
+# patch releases behind the last v1.12 release (v1.12.8, 2025-11-04), and
+# upstream kubernetes/ingress-nginx is archived; see ADR 0011 before bumping.
 # The checksum pins the manifest content, whose images are digest-pinned.
 readonly INGRESS_NGINX_VERSION="v1.12.4"
 readonly INGRESS_NGINX_MANIFEST_SHA256="458724636702c34320774f011e642b4a80212e2f79f98f14763fa06a3169cd93"
@@ -31,7 +32,10 @@ require_context
 
 ingress_nodes=$(kubectl_for_minishop get nodes --selector ingress-ready=true -o name)
 if [[ -z "$ingress_nodes" ]]; then
-  printf '%s\n' 'No node is labelled ingress-ready=true; create the cluster from cluster/kind-config.yaml.' >&2
+  printf '%s\n' 'No node is labelled ingress-ready=true.' \
+    'A new cluster from cluster/kind-config.yaml gets the label; create-cluster.sh does not relabel an existing one.' \
+    'For an existing cluster, with owner approval, label the control plane (the only node with host port mappings):' \
+    "  kubectl --context $CONTEXT label node ${CLUSTER_NAME}-control-plane ingress-ready=true" >&2
   exit 1
 fi
 
