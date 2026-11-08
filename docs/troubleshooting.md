@@ -149,12 +149,34 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   as a hint. The deployed image `sha256:44a87d71...` still returns the older
   behaviour above and 404 on `/live` and `/ready`.
 - **Symptom:** `kubectl exec deployment/minishop-frontend` or a validator result
-  comes from a legacy `frontend-*` Pod. **Cause:** the `minishop-frontend` Service and Deployment
-  selectors use only `component=frontend` and `name=minishop`, which legacy
-  frontend Pods also carry; only `part-of=minishop` separates them. **Fix:**
-  resolve the Pod with all three labels and target `pod/<name>`. This is a
-  workaround: the selectors remain unchanged, and a Deployment selector is
-  immutable, so narrowing it needs a planned change.
+  comes from a legacy `frontend-*` Pod. **Cause:** the `minishop-frontend`
+  Deployment selector uses only `component=frontend` and `name=minishop`,
+  which legacy frontend Pods also carry; only `part-of=minishop` separates
+  them. Since [#38](https://github.com/thanhdu-hcmus/minishop-k8s/issues/38)
+  the Service and frontend NetworkPolicy selectors also include
+  `part-of=minishop`, so Service traffic no longer reaches legacy Pods.
+  **Fix:** resolve the Pod with all three labels and target `pod/<name>`. The
+  Deployment selector is immutable and unchanged, so
+  `deployment/minishop-frontend` can still resolve to a legacy Pod until the
+  legacy `frontend` Deployment is deleted (runbook step 3).
+- **Symptom:** `bash scripts/deploy-helm.sh` or `deploy-kustomize-dev.sh` stops
+  before applying anything with `Ingress webapp/minishop-frontend already routes
+  minishop.local; retire it first (docs/legacy-retirement-runbook.md).`
+  **Cause:** `require_no_conflicting_ingress` in `scripts/lib.sh` found an
+  Ingress other than `webapp/minishop` claiming `minishop.local`. If it prints
+  `Could not list Ingresses to check for a host conflict.`, the Ingress list
+  itself failed and the check failed closed. **Fix:** follow step 2 of the
+  [legacy retirement runbook](./legacy-retirement-runbook.md) with owner
+  approval: delete the legacy Ingress, then deploy.
+- **Symptom:** creating an Ingress fails with `admission webhook
+  "validate.nginx.ingress.kubernetes.io" denied the request: host
+  "minishop.local" and path "/" is already defined in ingress
+  webapp/minishop-frontend`. **Cause:** the ingress-nginx validating webhook
+  rejects a second Ingress for the same host and path, so the legacy and chart
+  Ingresses cannot coexist. `helm upgrade --dry-run=server` does not show this;
+  `kubectl diff --server-side` does. **Fix:** delete the other Ingress first;
+  `minishop.local` returns 404 until the new one exists. To roll back, remove
+  `webapp/minishop` (Helm rollback) before re-creating the legacy Ingress.
 - **Symptom:** A command run as `wsl.exe ... bash -lc '...'` reports
   `context "kind-learn" does not exist` or shows an empty variable. **Cause:** the
   outer shell expanded `$` expressions before the inner bash ran. **Fix:** keep any
@@ -177,3 +199,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #36 item seeding record](./devlog/2026-11-02-minishop-item-seeding.md)
 - [Issue #44 backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md)
 - [Issue #39 backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md)
+- [Issue #38 ingress ownership record](./devlog/2026-11-08-ingress-ownership.md)
