@@ -21,6 +21,7 @@ spec:
     matchLabels:
       app.kubernetes.io/component: frontend
       app.kubernetes.io/name: minishop
+      app.kubernetes.io/part-of: minishop
   policyTypes:
     - Egress
   egress:
@@ -64,6 +65,7 @@ spec:
             matchLabels:
               app.kubernetes.io/component: frontend
               app.kubernetes.io/name: minishop
+              app.kubernetes.io/part-of: minishop
       ports:
         - protocol: TCP
           port: 3001

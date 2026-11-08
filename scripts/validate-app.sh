@@ -75,7 +75,7 @@ const isUnseeded = items =>
   }
 })().catch(error => { console.error(error.message); process.exit(1); });'
 
-# The Deployment and Service selectors also match legacy frontend Pods, so resolve
+# The immutable Deployment selector also matches legacy frontend Pods, so resolve
 # the Pod with part-of=minishop instead of exec into deployment/minishop-frontend.
 frontend_selector=app.kubernetes.io/component=frontend,app.kubernetes.io/name=minishop
 frontend_selector+=,app.kubernetes.io/part-of=minishop
