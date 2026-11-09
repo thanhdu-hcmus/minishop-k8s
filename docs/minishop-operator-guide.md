@@ -271,18 +271,23 @@ bash scripts/backup-data.sh --keep 7
   `--docker --pg-container NAME --redis-container NAME` reads from Docker
   containers instead.
 - It runs `pg_dump -Fc` and `redis-cli --rdb -` through `kubectl exec`. It
-  checks the files with `pg_restore --list` and `redis-check-rdb` from the
-  chart's pinned images, and it fails if row counts, row digests, or the Redis
-  key set change during the run.
+  checks the files from the chart's pinned images with `pg_restore --list`, a
+  full read of the dump (`pg_restore -f /dev/null`; `--list` alone reads only
+  the table of contents and passes a truncated dump), and `redis-check-rdb`.
+  It fails if row counts, row digests, or the Redis key set change during the
+  run.
 - Location: `~/minishop-backups/<UTC stamp>/`, or `--backup-dir DIR` or
   `MINISHOP_BACKUP_DIR`. The directory must be outside the repository, owned
   by you, and mode 700, so Windows drives under `/mnt` are refused. Files are
   written with umask 077. Each set holds `postgresql.dump`, `redis.rdb`,
   `manifest.txt` (counts, digests, versions, images), and `SHA256SUMS`. The set
-  is built as `.partial-<stamp>` and renamed only after every check passes.
+  is built as `.partial-<stamp>-<pid>` and renamed only after every check
+  passes. `SHA256SUMS` catches corruption, not deliberate tampering: anyone who
+  can write the set can rewrite it.
 - Output: counts, sizes, and checksums only.
 - `--keep N`: after a successful backup, delete all but the newest N complete
-  sets.
+  sets, never the new one. A backup whose UTC stamp does not sort after the
+  newest set (a clock that stepped back) is refused before it writes.
 
 Restore into a target you name. There is no default target:
 
@@ -297,16 +302,21 @@ bash scripts/restore-data.sh --from ~/minishop-backups/<stamp> \
 
 - It checks `SHA256SUMS` first, restores PostgreSQL with a single-transaction
   `pg_restore --clean`, then loads Redis through a temporary replica source on
-  `127.0.0.1:16379` inside the Redis container. Afterwards it checks counts and
-  digests against the manifest. `--only postgresql|redis` restores one
-  component.
+  `127.0.0.1:16379` inside the Redis container (`--restore-port PORT` moves
+  it). Afterwards it checks counts and digests against the manifest.
+  `--only postgresql|redis` restores one component.
 - During the Redis step the target is a read-only replica for a few seconds,
-  so backend writes fail briefly.
+  so backend writes fail briefly. The script retries `REPLICAOF NO ONE` until
+  the target is master again, and says so on stderr if it never is.
 - The backup holds no roles or passwords; the target keeps its own. Tables
-  that exist only in the target are kept, with a warning.
-- **kind-learn rule:** restore refuses a context named `kind-learn`, or one
-  whose cluster is `kind-learn`, unless `--allow-kind-learn` is given. Pass it
-  only when the owner has decided to roll the live data back.
+  that exist only in the target are kept, with a warning. If one of them has a
+  foreign key to a restored table, the restore fails and rolls back; drop or
+  detach it first.
+- **kind-learn rule:** unless `--allow-kind-learn` is given, restore refuses a
+  context named `kind-learn`, one whose cluster is `kind-learn`, one whose API
+  server URL matches cluster `kind-learn` in `./.kube/config`, and any target
+  that has the node `learn-control-plane`. Pass the flag only when the owner
+  has decided to roll the live data back.
 
 Test the scripts and the backups. Both use throwaway containers with no
 network and touch no cluster:
