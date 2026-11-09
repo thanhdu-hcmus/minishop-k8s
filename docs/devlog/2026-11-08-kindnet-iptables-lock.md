@@ -338,6 +338,7 @@ rising by thousands per second, `nr_throttled` close to `nr_periods`.
      'xtables lock'`).
 - Owner: decide on a later cluster rebuild with kind v0.33.0 or later and a
   matching node image, which ships kindnet without limits. It changes the
-  Kubernetes minor version and needs the #40 backups first.
+  Kubernetes minor version and needs the #40 backups first. Those now exist as
+  `scripts/backup-data.sh` ([Issue #40 record](./2026-11-09-data-backup-restore.md)).
 - Not fixed here: the Pod stuck Terminating and the failed sandboxes on
   learn-worker2 should clear once the lock is free. Check after the patch.
