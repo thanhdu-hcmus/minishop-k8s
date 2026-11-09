@@ -27,6 +27,20 @@ KUBECONFIG=./.kube/config kubectl --context kind-learn get nodes
 or refreshes its kubeconfig if it exists. This changes local cluster state; it
 does not install the application.
 
+Since Issue #50, a newly created cluster also gets
+`scripts/tune-kindnet-resources.sh --apply`, which replaces the node image's
+kindnet limits (100m CPU and 50Mi memory) with requests of 100m CPU and 128Mi,
+a 256Mi memory limit, and no CPU limit, and sets
+`priorityClassName: system-node-critical`. For an existing cluster the script
+only reports and dry-runs, and `create-cluster.sh` only warns if that check
+fails. Those limits cause Service outages after a Docker restart
+([troubleshooting](./troubleshooting.md#kindnet-xtables-lock),
+[ADR 0012](./decisions/0012-kindnet-resource-limits.md)). On an existing
+cluster such as `kind-learn`, run
+`bash scripts/tune-kindnet-resources.sh --apply` once, with owner approval; it
+rolls kindnet one node at a time and persists across Docker restarts. As of
+2026-11-08 it has not been applied to `kind-learn`.
+
 ## Reach minishop.local on a fresh cluster
 
 Added by Issue #38. This sequence was assembled from the scripts; it has not
