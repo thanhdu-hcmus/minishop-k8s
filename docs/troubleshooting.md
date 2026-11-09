@@ -191,7 +191,7 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   `priorityClassName: system-node-critical`, then rolls kindnet node by node.
   The patch survives Docker restarts; `create-cluster.sh` applies it to new
   clusters. Killing a hung listing is a last resort. It only helps for about
-  three minutes, and kindnetd then panics with `Can't synchronize rules after 3
+  three minutes, and kindnetd can panic after three failed sync attempts with `Can't synchronize rules after 3
   attempts: failed to list chains: running [/usr/sbin/iptables -t nat -S
   --wait]: exit status -1` and restarts. This happened on learn-worker2 at about
   16:07Z on 2026-11-08, and the restarted container thrashed again. See

@@ -220,7 +220,8 @@ rising by thousands per second, `nr_throttled` close to `nr_periods`.
   `panic: Can't synchronize rules after 3 attempts: failed to list chains:
   running [/usr/sbin/iptables -t nat -S --wait]: exit status -1`.
 - **Cause:** At about 16:07Z, to clear the lock before the #38 cutover, the
-  owner ran a guarded helper that killed kindnetd-owned `iptables -t nat -S`
+  owner ran (per the owner's session record; the log shows only that the
+  listing died from a signal) a guarded helper that killed kindnetd-owned `iptables -t nat -S`
   listings. kindnetd treats a killed listing as a failed sync and panics after
   three attempts.
 - **Result:** The new container thrashed again. Its listing on learn-worker2
@@ -322,15 +323,19 @@ rising by thousands per second, `nr_throttled` close to `nr_periods`.
   kind-learn after the owner's `--apply`:
   1. `KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp rollout
      restart deployment minishop-backend`, then `rollout status` it.
-  2. List the new addresses with `kubectl --context kind-learn -n webapp get
-     endpointslices -l kubernetes.io/service-name=minishop-backend -o
-     jsonpath='{.items[*].endpoints[*].addresses[0]}'`.
+  2. Wait until no `minishop-backend` Pod is Terminating, then list the ready
+     addresses with `KUBECONFIG=./.kube/config kubectl --context kind-learn -n
+     webapp get endpointslices -l kubernetes.io/service-name=minishop-backend -o
+     jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.addresses[0]}{"\n"}{end}'`.
+     kube-proxy programs only ready endpoints, so not-ready or terminating ones
+     must not be compared.
   3. On each node, `docker exec <node> iptables-save -t nat | grep
      'webapp/minishop-backend' | grep -o 'to-destination [0-9.:]*'` must list
      exactly those addresses.
   4. On each node, kube-proxy must log 0 `xtables lock` lines since the
-     restart (`kubectl -n kube-system logs <kube-proxy-pod> --since-time=<restart
-     time> | grep -c 'xtables lock'`).
+     restart (`KUBECONFIG=./.kube/config kubectl --context kind-learn -n
+     kube-system logs <kube-proxy-pod> --since-time=<restart time> | grep -c
+     'xtables lock'`).
 - Owner: decide on a later cluster rebuild with kind v0.33.0 or later and a
   matching node image, which ships kindnet without limits. It changes the
   Kubernetes minor version and needs the #40 backups first.
