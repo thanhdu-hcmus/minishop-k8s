@@ -251,6 +251,85 @@ Known gaps: the `minishop-frontend` Service and Deployment selectors still
 overlap legacy frontend Pods, and `POST /upload` is unauthenticated and drops the
 table when called.
 
+## Back up and restore data
+
+Issue #40 part 1 added scripts that back up and restore the Helm-owned
+`data/minishop-postgresql` and `data/minishop-redis`. They do not cover the
+legacy CNPG cluster or the legacy `redis` StatefulSet; see
+[runbook step 6](./legacy-retirement-runbook.md#step-6-back-up-legacy-data-no-deletion)
+for those. Run them from WSL. The design is in
+[ADR 0013](./decisions/0013-data-backup-restore.md) (proposed).
+
+Back up kind-learn. This only reads from the cluster:
+
+```bash
+bash scripts/backup-data.sh --keep 7
+```
+
+- Source: context `kind-learn`, namespace `data`, by default. `--context`,
+  `--kubeconfig`, `--namespace`, `--pg-pod`, and `--redis-pod` change it.
+  `--docker --pg-container NAME --redis-container NAME` reads from Docker
+  containers instead.
+- It runs `pg_dump -Fc` and `redis-cli --rdb -` through `kubectl exec`. It
+  checks the files with `pg_restore --list` and `redis-check-rdb` from the
+  chart's pinned images, and it fails if row counts, row digests, or the Redis
+  key set change during the run.
+- Location: `~/minishop-backups/<UTC stamp>/`, or `--backup-dir DIR` or
+  `MINISHOP_BACKUP_DIR`. The directory must be outside the repository, owned
+  by you, and mode 700, so Windows drives under `/mnt` are refused. Files are
+  written with umask 077. Each set holds `postgresql.dump`, `redis.rdb`,
+  `manifest.txt` (counts, digests, versions, images), and `SHA256SUMS`. The set
+  is built as `.partial-<stamp>` and renamed only after every check passes.
+- Output: counts, sizes, and checksums only.
+- `--keep N`: after a successful backup, delete all but the newest N complete
+  sets.
+
+Restore into a target you name. There is no default target:
+
+```bash
+# A throwaway or rebuilt cluster:
+bash scripts/restore-data.sh --from ~/minishop-backups/<stamp> \
+  --kubeconfig <path> --context <context>
+# Docker containers:
+bash scripts/restore-data.sh --from ~/minishop-backups/<stamp> \
+  --docker --pg-container <name> --redis-container <name>
+```
+
+- It checks `SHA256SUMS` first, restores PostgreSQL with a single-transaction
+  `pg_restore --clean`, then loads Redis through a temporary replica source on
+  `127.0.0.1:16379` inside the Redis container. Afterwards it checks counts and
+  digests against the manifest. `--only postgresql|redis` restores one
+  component.
+- During the Redis step the target is a read-only replica for a few seconds,
+  so backend writes fail briefly.
+- The backup holds no roles or passwords; the target keeps its own. Tables
+  that exist only in the target are kept, with a warning.
+- **kind-learn rule:** restore refuses a context named `kind-learn`, or one
+  whose cluster is `kind-learn`, unless `--allow-kind-learn` is given. Pass it
+  only when the owner has decided to roll the live data back.
+
+Test the scripts and the backups. Both use throwaway containers with no
+network and touch no cluster:
+
+```bash
+bash scripts/test-data-restore.sh                                  # self-test
+bash scripts/test-data-restore.sh --from ~/minishop-backups/<stamp> # restore drill
+```
+
+Cadence (manual; there is no CronJob, see ADR 0013):
+
+- Before any risky change: a cluster rebuild or kind upgrade, a Helm upgrade
+  that touches the data templates, password rotation, a seeding change, a
+  legacy retirement step, or a restore.
+- Otherwise weekly while the cluster is in use, with `--keep 7`.
+- A restore drill once a month.
+- The self-test after any change to the scripts.
+
+Known gaps: backups are unencrypted, there is one copy on the same machine,
+and losing the WSL disk loses them. Failures and fixes are in
+[troubleshooting](./troubleshooting.md); the drill is in the
+[Issue #40 record](./devlog/2026-11-09-data-backup-restore.md).
+
 ## Scoped cleanup
 
 Choose cleanup matching the active packaging path. These commands delete
@@ -278,3 +357,5 @@ and safe recovery commands are in [resilience validation results](./validation-r
   and [implementation record](./devlog/2026-09-27-platform-rbac-scaling-observability.md).
 - [Pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)
   and [validation results](./validation-results.md).
+- [Data backup and restore decision](./decisions/0013-data-backup-restore.md)
+  and [implementation record](./devlog/2026-11-09-data-backup-restore.md).
