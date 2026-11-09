@@ -154,6 +154,49 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   `kubectl diff --server-side` does. **Fix:** delete the other Ingress first;
   `minishop.local` returns 404 until the new one exists. To roll back, remove
   `webapp/minishop` (Helm rollback) before re-creating the legacy Ingress.
+- <a id="kindnet-xtables-lock"></a>**Symptom:** for minutes after a Docker
+  Desktop start (the "about 15 minutes broken" pattern seen since
+  2026-11-02; hung listings lasted 4-30 minutes), Services route to old Pod addresses
+  or refuse connections, `minishop.local` returns 404 or fails while the Pods are
+  Ready, and kube-proxy logs `Another app is currently holding the xtables
+  lock. Stopped waiting after 5s.` Sandbox creation fails and Pods can stay
+  `Terminating`. **Cause:** found in Issue #50. The node image
+  `kindest/node:v1.30.13` (kind v0.29.0) limits kindnet to 100m CPU and 50Mi
+  memory. After a Docker restart the page cache is cold, kindnetd's 80 MB
+  binary is charged to its own cgroup, and the cgroup reclaims and refaults that
+  code without end inside its CPU quota. kindnetd's iptables children
+  (`-S`, `-C`), such as `iptables -t nat -S --wait`, run in the same cgroup and
+  hold `/run/xtables.lock` for minutes, so
+  kube-proxy and the portmap CNI plugin queue behind it. It is not table size,
+  legacy iptables, or a user-space spin: the listing showed `utime` 0 and was
+  waiting on page faults and the run queue. **Signature:** in the kindnet
+  container's cgroup, `memory.current` is at `memory.max`,
+  `workingset_refault_file` climbs by thousands per second, and `nr_throttled`
+  is close to `nr_periods`. **Diagnose (read-only, per node):**
+
+  ```bash
+  docker exec learn-worker2 cat /proc/locks   # lock holder and waiters
+  docker exec learn-worker2 sh -c 'kp=$(pgrep -xo kindnetd);
+    d=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/$kp/cgroup);
+    cat $d/memory.max $d/memory.current $d/cpu.stat;
+    grep -E "^(anon|file|workingset_refault_file|pgscan_direct) " $d/memory.stat'
+  kubectl --context kind-learn -n kube-system logs <kube-proxy-pod> --since=1h | grep -c 'xtables lock'
+  ```
+
+  The [Issue #50 record](./devlog/2026-11-08-kindnet-iptables-lock.md#diagnosis-commands)
+  also lists the per-process iptables, stack, and `schedstat` checks. **Fix:**
+  `bash scripts/tune-kindnet-resources.sh` checks and dry-runs; with owner
+  approval, `bash scripts/tune-kindnet-resources.sh --apply` sets requests of
+  100m CPU and 128Mi, a 256Mi memory limit, no CPU limit, and
+  `priorityClassName: system-node-critical`, then rolls kindnet node by node.
+  The patch survives Docker restarts; `create-cluster.sh` applies it to new
+  clusters. Killing a hung listing is a last resort. It only helps for about
+  three minutes, and kindnetd then panics with `Can't synchronize rules after 3
+  attempts: failed to list chains: running [/usr/sbin/iptables -t nat -S
+  --wait]: exit status -1` and restarts. This happened on learn-worker2 at about
+  16:07Z on 2026-11-08, and the restarted container thrashed again. See
+  [ADR 0012](./decisions/0012-kindnet-resource-limits.md). As of 2026-11-08 the
+  patch is not yet applied to kind-learn.
 - **Symptom:** A command run as `wsl.exe ... bash -lc '...'` reports
   `context "kind-learn" does not exist` or shows an empty variable. **Cause:** the
   outer shell expanded `$` expressions before the inner bash ran. **Fix:** keep any
@@ -177,3 +220,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #44 backend digest pin record](./devlog/2026-11-02-backend-digest-pin.md)
 - [Issue #39 backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md)
 - [Issue #38 ingress ownership record](./devlog/2026-11-08-ingress-ownership.md)
+- [Issue #50 kindnet iptables lock record](./devlog/2026-11-08-kindnet-iptables-lock.md)
