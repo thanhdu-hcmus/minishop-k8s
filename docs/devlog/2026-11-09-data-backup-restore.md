@@ -32,7 +32,10 @@ kind cluster.
   `minishop`, user tables `public.marketitems` and `public.runtime_validation`.
 - Redis 7.4.7 (`redis@sha256:976ab0f0...`), AOF on (`appendfsync everysec`),
   default save points, `repl-diskless-sync yes`, `enable-debug-command no`,
-  `db0:keys=100,expires=0`.
+  `db0:keys=100,expires=0`. The chart sets neither diskless option; both are
+  Redis 7 defaults. Read again during the review fixes: `repl-diskless-load
+  disabled`. `rdb_last_cow_size` was 847,872 bytes in the first inspection and
+  917,504 bytes in the review-fix run (about 0.9 MB against the 256Mi limit).
 - Docker 27.2.0 in WSL2; kind v0.30.0; ShellCheck v0.10.0 from
   `koalaman/shellcheck:v0.10.0`.
 
@@ -43,8 +46,9 @@ kind cluster.
   table, count keys and digest the key set per database, and guard the backup
   location. `scripts/backup-data.sh` writes `<root>/<UTC stamp>/` with
   `postgresql.dump`, `redis.rdb`, `manifest.txt`, and `SHA256SUMS`, and has
-  `--keep N` pruning. `.gitignore` ignores `*.dump`, `*.rdb`, `/backups/`,
-  `/minishop-backups/`, and `.partial-*/`.
+  `--keep N` pruning. `.gitignore` ignores `*.dump` and `*.rdb` anywhere, and
+  any `backups/`, `minishop-backups/`, `.partial-*/` or `<UTC stamp>/`
+  directory at any depth (broadened in the review fixes).
 - **`feat(scripts)` restore:** `scripts/restore-data.sh` checks the set's
   checksums and restores into a named kube context or into Docker containers.
   It refuses kind-learn without `--allow-kind-learn`, then checks counts and
@@ -55,6 +59,9 @@ kind cluster.
 - **`docs(decisions)`:** `docs/decisions/0013-data-backup-restore.md`, status
   proposed. It covers the method, the storage location, the kind-learn guard,
   no CronJob, and the manual cadence.
+- **Review fixes (one batched pass, no Blockers):** see "Review findings"
+  under Problems. The four scripts are also committed as 100644, like the
+  rest of `scripts/`, folded into the commits that add them.
 
 ## Decisions
 - No CronJob. In-cluster storage dies with `kind delete cluster`, and storage
@@ -103,6 +110,71 @@ kind cluster.
 - **Fix:** Added the row and key-set digests to the backup and restore, then
   took a new backup. `--keep 1` pruned the older set.
 
+### Review findings (one batched pass)
+The reviewer found no Blockers. The five Should-fix items and nine Nits were
+fixed together; each fix below has a self-test case unless noted.
+- **`pg_restore --list` passed a truncated dump.** It reads only the table of
+  contents. The backup now also runs `pg_restore -f /dev/null`, which reads
+  every data block. Test: a `pg_dump` wrapper that drops the last 200 bytes;
+  the backup fails with `pg_restore could not read the whole dump`.
+- **The kind-learn guard matched names only.** It now also refuses a context
+  whose API server URL equals the `server:` of cluster `kind-learn` in the
+  repository's `.kube/config`, and, after those kubeconfig-only checks and
+  before any write, a target that answers `get node learn-control-plane`.
+  Tests: a renamed context with the same URL (fake live kubeconfig through
+  `MINISHOP_LIVE_KUBECONFIG`, unreachable ports), and a stub `kubectl` whose
+  target has the node.
+- **`--keep` could prune the new set after a clock step back.** The prune loop
+  skips the new stamp. The backup refuses, before it writes and again before
+  the rename, a stamp that does not sort after the newest set. Test: a
+  `29991231T235959Z` set makes the backup fail, and the older set survives.
+- **A failed `REPLICAOF NO ONE` in cleanup could leave Redis a read-only
+  replica.** Promotion is retried until `INFO replication` shows
+  `role:master`, bounded by `--sync-timeout`. If it never does, stderr says
+  `!!! The target Redis is still a replica ... Run REPLICAOF NO ONE`. Not
+  exercised by a failing case: every restore runs the success path, and a
+  failed restore was checked to leave the target master.
+- **The free-port probe sent the target password and counted NOAUTH as
+  free.** It now runs with `REDISCLI_AUTH` unset and treats the port as free
+  only on `Connection refused`. A temporary server that cannot listen fails at
+  once (`Failed listening` in its log, or no live pid after 2 s).
+  `--restore-port` moves it. Tests: a password-protected server on 16379 stops
+  the restore and records `acl_access_denied_auth:0`; `--restore-port 16380`
+  succeeds; a wrapper that binds `192.0.2.1` fails in under 30 s.
+- **Nits:**
+  - the partial set is `.partial-<stamp>-<pid>`, the trap is set after its
+    `mkdir`, and the rename uses `mv -T`;
+  - the key-set digest uses `sort -u`, because SCAN may repeat a key;
+  - the dump comment says the before/after check misses only a change
+    reverted during the dump;
+  - cleanup reads the temporary server's pid, sends `SHUTDOWN NOSAVE`, kills
+    the pid if it is still alive, and waits for the port to close before
+    removing the directory;
+  - with keys that have a TTL, each database may hold fewer keys than the
+    backup, never more, and a new manifest digest
+    (`redis_persistent_keyset_sha256`) of the keys without a TTL must match.
+    Test: a `session:1` key with `EX 3600`;
+  - documentation: the diskless-load cause, the diskless-sync condition, the
+    `.gitignore` list, the limits of `SHA256SUMS`, and the foreign-key
+    rollback (test: a target-only table referencing `marketitems` makes the
+    restore fail and leaves 100 rows);
+  - file modes are 100644.
+
+### Port 1 did not fail to bind in Docker
+- **Symptom:** The first fast-fail test used `--restore-port 1`, expecting a
+  non-root bind to fail; the restore succeeded instead.
+- **Cause:** Docker sets `net.ipv4.ip_unprivileged_port_start=0` in the
+  container, so uid 999 may bind port 1.
+- **Fix:** The test puts a `redis-server` wrapper first on the image's PATH
+  (`/usr/local/sbin`) that appends `--bind 192.0.2.1`, an address the
+  container does not have. The last `--bind` wins, so only the temporary
+  server fails.
+
+### The port tests used a pruned set
+- **Symptom:** `Error: .../20261109T172511Z is not a directory`.
+- **Cause:** The earlier `--keep 2` case had pruned the first set.
+- **Fix:** The port tests use the newest set.
+
 ## Verification
 - **Lint:** `bash -n` and ShellCheck v0.10.0 (container, with and without
   `-x`) are clean on all four scripts, which use LF line endings. Nothing under
@@ -116,7 +188,9 @@ kind cluster.
   - a forged row digest was detected;
   - restore refused kind-learn, refused a context aliasing the kind-learn
     cluster (fake kubeconfig, unreachable server), refused a missing target,
-    and refused a tampered set;
+    and refused a tampered set. `SHA256SUMS` sits beside the files, so it
+    catches corruption and accidental edits, not deliberate tampering by
+    someone who can rewrite the sums too;
   - backup refused a directory inside the repository;
   - backup failed closed with Redis stopped, and when redis-cli failed after
     the dump was written, leaving no partial set;
@@ -160,14 +234,43 @@ kind cluster.
 - **No data in the repository:** `git ls-files` and the untracked list show
   no `*.dump`, `*.rdb`, or backup directory. The backup root
   `~/minishop-backups` is 700.
+- **Review fixes** (2026-11-10 local, 2026-11-09 UTC):
+  - Self-test: 24 PASS lines in 74 s. That is the cases above plus a
+    truncated dump, the foreign-key rollback, a renamed context with the
+    kind-learn URL, a target with node `learn-control-plane`, a clock step
+    back, a TTL key, a taken port, a probe that sends no password,
+    `--restore-port`, and a bind failure.
+  - ShellCheck v0.10.0 (container, with and without `-x`) and `bash -n` are
+    clean on every commit. `git diff --check` is clean, and `git check-ignore`
+    covers set files at any depth (no tracked file is newly ignored).
+  - kind-learn backup into a `mktemp -d` root, set `20261109T173157Z`, 10 s
+    in the script and 10.6 s wall. The output showed counts, sizes and
+    checksums only:
+    - `postgresql.dump` 31,079 bytes,
+      `b5d22d46f534400065d18fd434c49c2a96d5f4109a2f31fed702c205ba049f6c`;
+      `--list` and the full read OK.
+    - `redis.rdb` 43,523 bytes,
+      `8608b9b71281addb940cde0ad7b46ec935898a9f9fcd83609ee936dfcab610e9`.
+    - `manifest.txt` 945 bytes,
+      `9911ee5756b201efb1070f3f96acd35d3e11fb75da38bc96cea3b8652f7a4dc4`.
+    - The row md5s and the key-set digest are unchanged from
+      `20261109T165932Z`.
+  - Drill of that set into throwaway containers: 100 rows and 100 keys,
+    digests equal, keys kept after a Redis restart. Restore 6 s, 9.0 s wall.
+    The temporary root was then deleted.
+  - Kube path re-run on a new throwaway `i40` (created in 42 s; deleted
+    afterwards). `get node learn-control-plane` was NotFound, the restore
+    passed the guard and matched in 11 s, and `/data` held no leftover
+    `.minishop-restore`.
+  - kind-learn: the same four node container IDs and StartedAt, and the same
+    data Pod uids and restart counts, before and after.
 
 - **Provenance:** the timings, sizes, checksums, container IDs, and Pod
   details above come from devops's runs on 2026-11-09. doc-writer checked the
   described behaviour (guards, messages, restore method, verification steps,
   `.gitignore` entries) against the scripts in this branch, but did not rerun
   any command, so the measured values are not independently verified. The
-  ADR's copy-on-write figure (about 0.8 MB) has no matching entry in this
-  record and is unverified.
+  ADR's copy-on-write figure is now recorded under Environment.
 
 ## Documentation
 - [Operator guide](../minishop-operator-guide.md#back-up-and-restore-data):
