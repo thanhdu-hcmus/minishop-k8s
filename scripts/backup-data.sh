@@ -98,11 +98,30 @@ printf 'Source: %s\n' "$(data_target_label)"
 data_require_component postgresql
 data_require_component redis
 
+# Complete sets in the backup root, oldest first (stamps sort by time).
+list_sets() {
+  find "$backup_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
+    grep -E "$DATA_STAMP_PATTERN" | sort || true
+}
+
+# A new set must sort after every existing one, or --keep could prune it and
+# "newest" would be wrong. A clock that stepped back (WSL after sleep) fails
+# here instead.
+require_newest_stamp() {
+  local newest
+  newest=$(list_sets | tail -n 1)
+  if [[ -n "$newest" && ! "$stamp" > "$newest" ]]; then
+    die "the clock reads $stamp, not after the newest set $newest; fix the clock (WSL: wsl --shutdown) and retry"
+  fi
+}
+
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 final_dir="$backup_root/$stamp"
-work_dir="$backup_root/.partial-$stamp"
-[[ ! -e "$final_dir" && ! -e "$work_dir" ]] || die "$final_dir already exists; retry in a second"
+work_dir="$backup_root/.partial-$stamp-$$"
+[[ ! -e "$final_dir" ]] || die "$final_dir already exists; retry in a second"
+require_newest_stamp
 
+mkdir -- "$work_dir"
 cleanup() {
   if [[ -n "${work_dir:-}" && -d "$work_dir" ]]; then
     rm -rf -- "$work_dir"
@@ -110,7 +129,6 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-mkdir -- "$work_dir"
 started=$SECONDS
 
 # --- PostgreSQL ---------------------------------------------------------------
@@ -120,14 +138,19 @@ pg_stats_before=$(data_pg_table_stats) || die "could not count PostgreSQL rows"
 data_exec postgresql sh -ec "$DATA_PG_ENV"' exec pg_dump -Fc' \
   </dev/null >"$work_dir/$DATA_PG_FILE" || die "pg_dump failed"
 pg_stats_after=$(data_pg_table_stats) || die "could not count PostgreSQL rows"
-# pg_dump reads one snapshot; equal counts and digests on both sides tie the
-# recorded values to that snapshot.
+# pg_dump reads one snapshot. Comparing counts and digests before and after it
+# detects changes during the dump, except a change reverted before the second
+# reading.
 [[ "$pg_stats_before" == "$pg_stats_after" ]] ||
   die "PostgreSQL rows changed during pg_dump; retry when writes are quiet"
 pg_counts_before=$(data_pg_counts "$pg_stats_before")
 
 pg_list=$(data_local_tool "$pg_image" "$work_dir" pg_restore --list "/backup/$DATA_PG_FILE") ||
   die "pg_restore --list rejected the dump"
+# --list reads only the table of contents; a dump cut short still passes it.
+# Converting the whole archive to SQL reads every data block.
+data_local_tool "$pg_image" "$work_dir" pg_restore -f /dev/null "/backup/$DATA_PG_FILE" ||
+  die "pg_restore could not read the whole dump"
 pg_table_data=$(grep -c ' TABLE DATA ' <<<"$pg_list" || true)
 pg_entries=$(grep -cv '^;' <<<"$pg_list" || true)
 pg_table_count=$(wc -l <<<"$pg_counts_before")
@@ -146,6 +169,7 @@ data_exec redis sh -ec "$DATA_REDIS_ENV"' exec redis-cli --rdb -' \
 }
 redis_after=$(data_redis_keyspace) || die "could not read the Redis keyspace"
 keyset_after=$(data_redis_keyset_digests) || die "could not list the Redis key set"
+persistent_keyset=$(data_redis_persistent_keyset_digests) || die "could not list the Redis keys without a TTL"
 # sha256 of empty input: a database with keys must never list none.
 if grep -q '=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855$' <<<"$keyset_before"; then
   die "a Redis database listed no keys"
@@ -197,6 +221,7 @@ redis_total=$(data_sum_counts "$redis_before")
   if [[ -n "$redis_before" ]]; then
     awk '{ print "redis_keys." $0 }' <<<"$redis_before"
     awk '{ print "redis_keyset_sha256." $0 }' <<<"$keyset_before"
+    awk '{ print "redis_persistent_keyset_sha256." $0 }' <<<"$persistent_keyset"
   fi
   printf 'redis_keys_total=%s\n' "$rdb_keys"
   printf 'redis_expires=%s\n' "$rdb_expires"
@@ -205,7 +230,10 @@ redis_total=$(data_sum_counts "$redis_before")
 (cd "$work_dir" && sha256sum --check --strict --quiet "$DATA_SUMS_FILE") || die "checksum re-read failed"
 sync -- "$work_dir"/* 2>/dev/null || sync
 
-mv -- "$work_dir" "$final_dir"
+# Re-check: another run may have finished a newer set meanwhile.
+require_newest_stamp
+[[ ! -e "$final_dir" ]] || die "$final_dir appeared during the backup"
+mv -T -- "$work_dir" "$final_dir"
 work_dir=""
 trap - EXIT
 
@@ -214,18 +242,19 @@ printf 'Backup %s complete in %ss: %s\n' "$stamp" "$((SECONDS - started))" "$fin
 while read -r sum file; do
   printf '  %-16s %10s bytes  sha256 %s\n' "$file" "$(stat -c %s -- "$final_dir/$file")" "$sum"
 done <"$final_dir/$DATA_SUMS_FILE"
-printf '  PostgreSQL %s: pg_restore --list OK (%s entries, %s TABLE DATA); rows %s (digests in the manifest)\n' \
+printf '  PostgreSQL %s: pg_restore --list and full read OK (%s entries, %s TABLE DATA); rows %s (digests in the manifest)\n' \
   "$pg_version" "$pg_entries" "$pg_table_data" "$(tr '\n' ' ' <<<"$pg_counts_before" | sed 's/ $//')"
 printf '  Redis %s: redis-check-rdb OK (%s keys, %s with expiry); keyspace %s\n' \
   "$redis_version" "$rdb_keys" "$rdb_expires" "$(tr '\n' ' ' <<<"${redis_before:-empty}" | sed 's/ $//')"
 
 # --- Optional pruning of older complete sets ----------------------------------
 if [[ -n "$keep" ]]; then
-  mapfile -t sets < <(find "$backup_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
-    grep -E "$DATA_STAMP_PATTERN" | sort)
+  mapfile -t sets < <(list_sets)
   excess=$((${#sets[@]} - keep))
   for ((i = 0; i < excess; i++)); do
-    # Only directories that look like our sets: a stamp name and a SHA256SUMS.
+    # Never the set just written; only directories that look like our sets:
+    # a stamp name and a SHA256SUMS.
+    [[ "${sets[i]}" != "$stamp" ]] || continue
     if [[ -f "$backup_root/${sets[i]}/$DATA_SUMS_FILE" ]]; then
       rm -rf -- "${backup_root:?}/${sets[i]}"
       printf 'Pruned %s (keeping the newest %s)\n' "${sets[i]}" "$keep"

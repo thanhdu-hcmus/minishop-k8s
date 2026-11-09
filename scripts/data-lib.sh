@@ -183,12 +183,31 @@ data_redis_keyspace() {
 }
 
 # sha256 of the sorted key names in each logical database as "db0=<sha>"
-# lines. It proves the same key set without printing a key; value integrity
+# lines (SCAN may return a key twice, hence sort -u). It proves the same key
+# set without printing a key; value integrity
 # comes from the RDB's own CRC64, checked by redis-check-rdb.
 data_redis_keyset_digests() {
   data_exec redis sh -ec "$DATA_REDIS_ENV"'
     for db in $(redis-cli INFO keyspace | tr -d "\r" | sed -n "s/^db\([0-9]*\):.*/\1/p"); do
-      printf "db%s=%s\n" "$db" "$(redis-cli -n "$db" --scan | LC_ALL=C sort | sha256sum | cut -d" " -f1)"
+      printf "db%s=%s\n" "$db" "$(redis-cli -n "$db" --scan | LC_ALL=C sort -u | sha256sum | cut -d" " -f1)"
+    done' </dev/null
+}
+
+# Like data_redis_keyset_digests, but over the keys without a TTL only, which
+# a restore must bring back exactly even when keys with a TTL have expired. A
+# database with no TTL keys gives the same digest as the full key set; one
+# with TTL keys costs one TTL call per key.
+data_redis_persistent_keyset_digests() {
+  data_exec redis sh -ec "$DATA_REDIS_ENV"'
+    for line in $(redis-cli INFO keyspace | tr -d "\r" | grep "^db[0-9]*:"); do
+      db=$(echo "$line" | sed "s/^db\([0-9]*\):.*/\1/")
+      expires=$(echo "$line" | sed -n "s/.*,expires=\([0-9]*\).*/\1/p")
+      printf "db%s=%s\n" "$db" "$(redis-cli -n "$db" --scan | LC_ALL=C sort -u |
+        while IFS= read -r key; do
+          if [ "$expires" = 0 ] || [ "$(redis-cli -n "$db" TTL "$key")" = -1 ]; then
+            printf "%s\n" "$key"
+          fi
+        done | sha256sum | cut -d" " -f1)"
     done' </dev/null
 }
 
