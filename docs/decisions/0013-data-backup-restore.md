@@ -28,45 +28,66 @@ the owner accepts it on merge.
 1. **Logical backups, taken through `kubectl exec`.**
    `scripts/backup-data.sh` runs `pg_dump -Fc` of the application database and
    `redis-cli --rdb -` inside the running Pods and streams both to the host.
-   `--rdb` uses a replication sync, so Redis writes no file on the server. The
-   client tools read credentials from the container environment; no password
-   passes through the host shell.
+   `--rdb` uses a replication sync. With `repl-diskless-sync yes`, the Redis 7
+   default (observed live, not set by the chart), Redis streams the snapshot
+   and writes no file on the server; with `no` it would first save an RDB to
+   `/data`. The client tools read credentials from the container environment;
+   no password passes through the host shell.
 2. **Backups live outside the cluster and the repository.** The default root
    is `~/minishop-backups` in WSL (override with `--backup-dir` or
    `MINISHOP_BACKUP_DIR`). The script refuses a root inside the repository, one
    it does not own, or one that is not mode 700 (which also rejects Windows
-   drives under `/mnt`). Files are written with umask 077. `.gitignore` also
-   ignores `*.dump`, `*.rdb`, `/backups/`, and `/minishop-backups/`.
+   drives under `/mnt`). Files are written with umask 077. As a second line of
+   defence, `.gitignore` ignores any `backups/`, `minishop-backups/`,
+   `.partial-*/` or `<UTC stamp>/` directory at any depth, with everything in
+   it (`manifest.txt`, `SHA256SUMS`, `redis-cli.log`), and `*.dump` and
+   `*.rdb` anywhere.
 3. **A backup set is verified before it exists.** Each run builds
-   `<root>/.partial-<stamp>/` and renames it to `<root>/<UTC stamp>/` only
-   after these checks pass; any failure deletes the partial set:
-   - `pg_restore --list` and `redis-check-rdb` from the chart's pinned image
-     digests, run locally with no network and a read-only mount;
+   `<root>/.partial-<stamp>-<pid>/` and renames it to `<root>/<UTC stamp>/`
+   only after these checks pass; any failure deletes the partial set:
+   - `pg_restore --list`, then a full read (`pg_restore -f /dev/null`, which
+     `--list` alone does not do: it reads only the table of contents, so a
+     truncated dump passes it), and `redis-check-rdb`, all from the chart's
+     pinned image digests, run locally with no network and a read-only mount;
    - one TABLE DATA entry per user table;
    - the RDB ends exactly where `redis-check-rdb` reports `RDB looks OK`;
    - row counts, per-table row digests, key counts and key-set digests are equal
      before and after the dump, and the RDB's key count equals the live count.
    The set holds `postgresql.dump`, `redis.rdb`, `manifest.txt` (counts,
    digests, versions, images; no data or credentials), and `SHA256SUMS`.
-   `--keep N` prunes older complete sets after a successful run.
+   `--keep N` prunes older complete sets after a successful run, never the new
+   one. A run whose stamp does not sort after the newest existing set (a clock
+   that stepped back) fails before it writes.
 4. **Restore needs a named target and never defaults to kind-learn.**
    `scripts/restore-data.sh --from <set>` needs `--context NAME` or
-   `--docker --pg-container ... --redis-container ...`. It refuses a context
-   named `kind-learn`, or one whose cluster is `kind-learn`, unless
-   `--allow-kind-learn` is passed. That flag is for an owner decision to roll
-   the live data back, and nothing else.
+   `--docker --pg-container ... --redis-container ...`. Unless
+   `--allow-kind-learn` is passed, it refuses a target when:
+   - the context is named `kind-learn`, or its cluster entry is `kind-learn`;
+   - the context's API server URL equals the `server:` of cluster `kind-learn`
+     in the repository's `.kube/config` (kind keeps the published API port
+     across restarts);
+   - or, after those kubeconfig-only checks and before any write, the target
+     answers `get node learn-control-plane`.
+   That flag is for an owner decision to roll the live data back, and nothing
+   else.
 5. **Restore method.**
    - PostgreSQL: `pg_restore --clean --if-exists --no-owner --no-privileges
      --single-transaction --exit-on-error`, as the target's application user,
      with `lock_timeout=30s`. A failure rolls back.
    - Redis: the RDB is copied into the Redis container and checked against its
-     sha256. A temporary `redis-server` on `127.0.0.1:16379`, with a one-time
-     password, serves it. The target runs `REPLICAOF` against it, then
-     `REPLICAOF NO ONE`, and waits for the AOF rewrite. This loads the snapshot
-     with no Pod restart and no change to the StatefulSet.
+     sha256. A temporary `redis-server` on `127.0.0.1:16379` (`--restore-port`
+     changes it), with a one-time password, serves it. The port probe sends no
+     credentials and treats the port as free only on "Connection refused"; a
+     temporary server that cannot listen fails the restore at once. The target
+     runs `REPLICAOF` against it, then `REPLICAOF NO ONE`, retried until
+     `INFO replication` shows `role:master` (bounded by `--sync-timeout`), and
+     waits for the AOF rewrite. This loads the snapshot with no Pod restart and
+     no change to the StatefulSet. If the target never becomes master again,
+     the script says so loudly on stderr.
    - Afterwards, row counts, row digests, key counts and key-set digests must
-     match the manifest exactly. If keys have a TTL, the key count only has to
-     fall within the range the manifest allows.
+     match the manifest exactly. If keys have a TTL, each database may hold
+     fewer keys than the backup but never more, and the digest of its keys
+     without a TTL must match exactly.
 6. **No scheduled in-cluster CronJob for now.** Backups are manual, on this
    cadence:
    - before any risky change: a cluster rebuild or kind upgrade (the #50
@@ -123,17 +144,25 @@ the owner accepts it on merge.
 - A restore needs the target's Secrets and StatefulSets first. The backup
   holds no roles or passwords, so the target keeps its own role password, and
   restoring after a rotation (part 3) does not undo the rotation.
+- `SHA256SUMS` sits next to the files it covers, so it catches corruption and
+  accidental change, not deliberate tampering: anyone who can write the set
+  can rewrite the sums. Protection against tampering would need a signature or
+  a copy of the sums kept elsewhere.
 - A PostgreSQL restore leaves tables that exist only in the target, and warns
-  about them.
+  about them. If such a table has a foreign key to a table in the backup,
+  `--clean` cannot drop the referenced table, so the restore fails and rolls
+  back (shown by the self-test); drop or detach the extra table first.
 - During a Redis restore the target is briefly a read-only replica, so
-  backend writes fail for a few seconds. If the restore fails part-way, Redis
-  may be left empty until it is run again. A leftover
+  backend writes fail for a few seconds. With `repl-diskless-load disabled`
+  (the default, as live), the target clears its data once the snapshot has
+  arrived, just before it loads it, so a failure while loading leaves Redis
+  empty until the restore is run again. A leftover
   `/data/.minishop-restore` (after the script is killed) blocks the next
   restore until it is removed.
-- The backup forks Redis for the transfer (copy-on-write). Its last measured
-  COW size was about 0.8 MB, well within the 256Mi limit (not recorded in the
-  implementation record; unverified). `pg_dump` takes
-  ACCESS SHARE locks only.
+- The backup forks Redis for the transfer (copy-on-write). `rdb_last_cow_size`
+  read 847,872 and 917,504 bytes on 2026-11-09 (implementation record,
+  Environment), well within the 256Mi limit. `pg_dump` takes ACCESS SHARE
+  locks only.
 - The backup fails, rather than recording mismatched counts, if PostgreSQL rows
   or the Redis key set change while it runs. A busy key space with TTLs would
   need a different consistency check.
