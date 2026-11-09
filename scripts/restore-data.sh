@@ -36,6 +36,8 @@
 #   --allow-kind-learn      permit the live kind-learn cluster as the target;
 #                           this overwrites its data (owner decision only)
 #   --sync-timeout SECONDS  limit for the Redis sync and AOF rewrite (default 300)
+#   --restore-port PORT     loopback port for the temporary Redis server
+#                           inside the Redis container (default 16379)
 
 # DATA_* variables set here are read by data-lib.sh, and in-container commands
 # are single-quoted on purpose: they expand inside the container.
@@ -49,7 +51,9 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/data-lib.sh"
 
 readonly LIVE_CONTEXT=kind-learn
-readonly REDIS_RESTORE_PORT=16379
+readonly LIVE_NODE=learn-control-plane
+# The kubeconfig that names the live cluster; overridable for tests only.
+readonly LIVE_KUBECONFIG=${MINISHOP_LIVE_KUBECONFIG:-$DATA_REPO_ROOT/.kube/config}
 
 usage() {
   sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -59,6 +63,7 @@ from=""
 only=""
 allow_live=false
 sync_timeout=300
+restore_port=16379
 docker_target=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --only) only=${2:?--only needs a value}; shift 2 ;;
     --allow-kind-learn) allow_live=true; shift ;;
     --sync-timeout) sync_timeout=${2:?--sync-timeout needs a value}; shift 2 ;;
+    --restore-port) restore_port=${2:?--restore-port needs a value}; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
@@ -86,6 +92,8 @@ case "$only" in
   *) die "--only must be postgresql or redis" ;;
 esac
 [[ "$sync_timeout" =~ ^[1-9][0-9]*$ ]] || die "--sync-timeout must be a positive integer"
+[[ "$restore_port" =~ ^[1-9][0-9]*$ && "$restore_port" -le 65535 && "$restore_port" -ne 6379 ]] ||
+  die "--restore-port must be a free TCP port other than 6379"
 
 # --- Target: explicit, and never kind-learn by accident ------------------------
 if [[ "$docker_target" == true ]]; then
@@ -107,9 +115,34 @@ else
     -o "jsonpath={.contexts[?(@.name==\"$DATA_CONTEXT\")].context.cluster}") ||
     die "could not read kubeconfig $DATA_KUBECONFIG"
   [[ -n "$target_cluster" ]] || die "context $DATA_CONTEXT is not in $DATA_KUBECONFIG"
-  if [[ "$DATA_CONTEXT" == "$LIVE_CONTEXT" || "$target_cluster" == "$LIVE_CONTEXT" ]] &&
-    [[ "$allow_live" != true ]]; then
-    die "refusing to restore into the live cluster $LIVE_CONTEXT (context $DATA_CONTEXT); this overwrites its data. Pass --allow-kind-learn only on an owner decision (docs/decisions/0013-data-backup-restore.md)"
+  target_server=$(kubectl --kubeconfig "$DATA_KUBECONFIG" config view \
+    -o "jsonpath={.clusters[?(@.name==\"$target_cluster\")].cluster.server}") ||
+    die "could not read kubeconfig $DATA_KUBECONFIG"
+  # The live API server URL, from the repository's kubeconfig. kind keeps the
+  # published API port across restarts, so the URL identifies the cluster
+  # whatever the context or cluster entry is called.
+  live_server=""
+  if [[ -r "$LIVE_KUBECONFIG" ]]; then
+    live_server=$(kubectl --kubeconfig "$LIVE_KUBECONFIG" config view \
+      -o "jsonpath={.clusters[?(@.name==\"$LIVE_CONTEXT\")].cluster.server}" 2>/dev/null) || live_server=""
+  fi
+  live_reason=""
+  if [[ "$DATA_CONTEXT" == "$LIVE_CONTEXT" ]]; then
+    live_reason="context $DATA_CONTEXT"
+  elif [[ "$target_cluster" == "$LIVE_CONTEXT" ]]; then
+    live_reason="context $DATA_CONTEXT points at cluster $LIVE_CONTEXT"
+  elif [[ -n "$live_server" && "$target_server" == "$live_server" ]]; then
+    live_reason="context $DATA_CONTEXT uses the $LIVE_CONTEXT API server $live_server"
+  fi
+  # All of the above read kubeconfig files only. The last check asks the
+  # target's API whether it has kind-learn's control-plane node, before
+  # anything is written.
+  if [[ -z "$live_reason" ]] &&
+    data_kubectl get node "$LIVE_NODE" -o name >/dev/null 2>&1; then
+    live_reason="the target has node $LIVE_NODE"
+  fi
+  if [[ -n "$live_reason" && "$allow_live" != true ]]; then
+    die "refusing to restore into the live cluster $LIVE_CONTEXT ($live_reason); this overwrites its data. Pass --allow-kind-learn only on an owner decision (docs/decisions/0013-data-backup-restore.md)"
   fi
 fi
 
@@ -181,20 +214,52 @@ sha=$1 port=$2 timeout=$3
 dir=/data/.minishop-restore
 replicating=false
 tmp_pw=""
+field() { redis-cli "$@" | tr -d "\r"; }
+tmp_field() { REDISCLI_AUTH="$tmp_pw" redis-cli -p "$port" "$@" | tr -d "\r"; }
+# Probe without credentials, so nothing listening on the port receives the
+# target password. The port is free only if the connection is refused.
+port_free() {
+  case "$(env -u REDISCLI_AUTH redis-cli --no-auth-warning -h 127.0.0.1 -p "$port" PING 2>&1)" in
+    *"Connection refused"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# REPLICAOF NO ONE is refused while the target is loading, so retry until
+# INFO shows role:master, bounded by the timeout.
+promote() {
+  i=0
+  while :; do
+    redis-cli REPLICAOF NO ONE >/dev/null 2>&1 || true
+    if field INFO replication 2>/dev/null | grep -qx role:master; then
+      redis-cli CONFIG SET masterauth "" >/dev/null 2>&1 || true
+      return 0
+    fi
+    i=$((i + 1))
+    [ "$i" -le "$timeout" ] || break
+    sleep 1
+  done
+  echo "!!! The target Redis is still a replica and rejects writes. Run REPLICAOF NO ONE in this Redis container now." >&2
+  return 1
+}
 cleanup() {
   status=$?
+  trap - EXIT
   if [ "$replicating" = true ]; then
-    redis-cli REPLICAOF NO ONE >/dev/null 2>&1 || true
-    redis-cli CONFIG SET masterauth "" >/dev/null 2>&1 || true
+    replicating=false
+    promote || status=1
   fi
   if [ -n "$tmp_pw" ]; then
+    # SHUTDOWN removes the pid file, so read it first.
+    pid=$(cat "$dir/server.pid" 2>/dev/null || true)
     REDISCLI_AUTH="$tmp_pw" redis-cli -p "$port" SHUTDOWN NOSAVE >/dev/null 2>&1 || true
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null || true; fi
+    i=0
+    until port_free || [ "$i" -ge 10 ]; do i=$((i + 1)); sleep 1; done
+    port_free || echo "warning: the temporary redis-server on port $port did not stop" >&2
   fi
   rm -rf "$dir"
   exit "$status"
 }
-field() { redis-cli "$@" | tr -d "\r"; }
-tmp_field() { REDISCLI_AUTH="$tmp_pw" redis-cli -p "$port" "$@" | tr -d "\r"; }
 wait_for() { # description, shell condition
   i=0
   until eval "$2"; do
@@ -203,12 +268,27 @@ wait_for() { # description, shell condition
     sleep 1
   done
 }
+# Fail at once if the temporary server could not start, instead of waiting
+# for the timeout.
+tmp_server_ready() {
+  if grep -q "Failed listening" "$dir/server.log" 2>/dev/null; then
+    echo "the temporary redis-server could not listen on 127.0.0.1:$port: $(grep -m 1 "Failed listening" "$dir/server.log")" >&2
+    exit 1
+  fi
+  if [ "$i" -ge 2 ]; then
+    if [ ! -s "$dir/server.pid" ] || ! kill -0 "$(cat "$dir/server.pid")" 2>/dev/null; then
+      echo "the temporary redis-server is not running" >&2
+      exit 1
+    fi
+  fi
+  tmp_field INFO persistence 2>/dev/null | grep -qx loading:0
+}
 if [ -e "$dir" ]; then
   echo "$dir is left from an interrupted restore; check no temporary redis-server runs on port $port, then remove it" >&2
   exit 1
 fi
-if redis-cli -p "$port" PING >/dev/null 2>&1; then
-  echo "port $port is in use in the Redis container" >&2
+if ! port_free; then
+  echo "port $port is in use in the Redis container; pass --restore-port" >&2
   exit 1
 fi
 trap cleanup EXIT
@@ -221,8 +301,7 @@ tmp_pw=$(od -An -tx1 -N24 /dev/urandom | tr -d " \n")
 printf "requirepass %s\n" "$tmp_pw" | redis-server - --port "$port" --bind 127.0.0.1 \
   --dir "$dir" --dbfilename dump.rdb --appendonly no --save "" \
   --daemonize yes --logfile "$dir/server.log" --pidfile "$dir/server.pid" >/dev/null
-wait_for "the temporary server" \
-  "tmp_field INFO persistence 2>/dev/null | grep -qx loading:0"
+wait_for "the temporary server" tmp_server_ready
 loaded=0
 for n in $(tmp_field INFO keyspace | sed -n "s/^db[0-9]*:keys=\([0-9]*\),.*/\1/p"); do
   loaded=$((loaded + n))
@@ -236,9 +315,8 @@ replicating=true
 redis-cli REPLICAOF 127.0.0.1 "$port" >/dev/null
 wait_for "the replication sync" \
   "field INFO replication | grep -qx master_link_status:up && field INFO replication | grep -qx master_sync_in_progress:0 && field INFO persistence | grep -qx loading:0"
-redis-cli REPLICAOF NO ONE >/dev/null
-redis-cli CONFIG SET masterauth "" >/dev/null
 replicating=false
+promote || exit 1
 if field INFO persistence | grep -qx aof_enabled:1; then
   wait_for "the AOF rewrite" \
     "field INFO persistence | grep -qx aof_rewrite_in_progress:0 && field INFO persistence | grep -qx aof_rewrite_scheduled:0"
@@ -259,7 +337,7 @@ restore_redis() {
     "$DATA_REDIS_FILE" "$(data_redis_version)"
   local load_check=-
   [[ "$expires" -ne 0 ]] || load_check=$expected_total
-  data_exec redis sh -c "$REDIS_RESTORE_SCRIPT" restore "$sha" "$REDIS_RESTORE_PORT" \
+  data_exec redis sh -c "$REDIS_RESTORE_SCRIPT" restore "$sha" "$restore_port" \
     "$sync_timeout" "$load_check" <"$from/$DATA_REDIS_FILE" || die "Redis restore failed"
   actual=$(data_redis_keyspace) || die "could not read the Redis keyspace after the restore"
   actual_total=$(data_sum_counts "$actual")
@@ -273,12 +351,21 @@ restore_redis() {
     printf '  keys and key-set digests match the backup: %s (total %s)\n' \
       "$(tr '\n' ' ' <<<"${actual:-empty}" | sed 's/ $//')" "$actual_total"
   else
-    # Keys with a TTL may expire between backup and restore, so neither the
-    # count nor the key set has to match exactly.
-    [[ "$actual_total" -le "$expected_total" && "$actual_total" -ge $((expected_total - expires)) ]] ||
-      die "Redis has $actual_total keys; the backup has $expected_total ($expires with expiry)"
-    printf '  keys within the backup range: total %s of %s (%s with expiry)\n' \
-      "$actual_total" "$expected_total" "$expires"
+    # Keys with a TTL may expire between backup and restore. Each database may
+    # hold fewer keys than the backup, never more, and its keys without a TTL
+    # must be exactly the backup's.
+    local line db count backup_count
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      db=${line%%=*} count=${line#*=}
+      backup_count=$(sed -n "s/^redis_keys\\.$db=//p" "$from/$DATA_MANIFEST_FILE")
+      [[ -n "$backup_count" && "$count" -le "$backup_count" ]] ||
+        die "Redis $db has $count keys; the backup has ${backup_count:-none}"
+    done <<<"$actual"
+    [[ "$(data_redis_persistent_keyset_digests)" == "$(sed -n 's/^redis_persistent_keyset_sha256\.//p' "$from/$DATA_MANIFEST_FILE")" ]] ||
+      die "the restored Redis keys without a TTL differ from the backup"
+    printf '  keys within the backup range, keys without a TTL match: %s (total %s of %s, %s with expiry)\n' \
+      "$(tr '\n' ' ' <<<"${actual:-empty}" | sed 's/ $//')" "$actual_total" "$expected_total" "$expires"
   fi
 }
 
