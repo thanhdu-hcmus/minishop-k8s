@@ -37,3 +37,5 @@ scoped cleanup.
 31. [Ingress ownership and legacy retirement decision](./decisions/0011-ingress-ownership-and-legacy-retirement.md) — proposed T2 decision on the chart-owned Ingress, exact frontend selectors, ingress-nginx and MetalLB ownership, and deferred data retention.
 32. [Legacy retirement runbook](./legacy-retirement-runbook.md) — proposed, owner-approved-per-step order for retiring the hand-applied legacy objects; not yet run.
 33. [Ingress ownership record](./devlog/2026-11-08-ingress-ownership.md) — Issue #38 Ingress, selectors, pinned ingress-nginx path, preflight, and read-only verification.
+34. [kindnet resource limits decision](./decisions/0012-kindnet-resource-limits.md) — proposed T2 decision to replace the node image's kindnet limits with 100m/128Mi requests, a 256Mi memory limit, no CPU limit, and `system-node-critical` priority.
+35. [kindnet iptables lock record](./devlog/2026-11-08-kindnet-iptables-lock.md) — Issue #50 diagnosis of the cgroup thrash that held `/run/xtables.lock` after Docker restarts, `tune-kindnet-resources.sh`, and throwaway-cluster verification.

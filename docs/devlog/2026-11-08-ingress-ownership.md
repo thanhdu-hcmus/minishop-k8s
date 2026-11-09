@@ -161,6 +161,10 @@ applied, deleted, scaled, or upgraded.
   Desktop restart (Pods had restarted about two minutes earlier).
 - **Fix:** None needed. About 20 minutes later the same request returned 200
   in 0.03 s.
+- **Later note (Issue #50):** a possible cause is the kindnet cgroup thrash
+  that holds the xtables lock after Docker restarts
+  ([troubleshooting](../troubleshooting.md#kindnet-xtables-lock)). Not
+  confirmed for this event; no lock evidence was captured at the time.
 
 ### Helm's server dry-run does not call admission webhooks
 - **Symptom:** `helm upgrade --dry-run=server` with the Ingress enabled
