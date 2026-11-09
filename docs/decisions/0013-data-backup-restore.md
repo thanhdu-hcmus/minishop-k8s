@@ -131,7 +131,8 @@ the owner accepts it on merge.
   `/data/.minishop-restore` (after the script is killed) blocks the next
   restore until it is removed.
 - The backup forks Redis for the transfer (copy-on-write). Its last measured
-  COW size was about 0.8 MB, well within the 256Mi limit. `pg_dump` takes
+  COW size was about 0.8 MB, well within the 256Mi limit (not recorded in the
+  implementation record; unverified). `pg_dump` takes
   ACCESS SHARE locks only.
 - The backup fails, rather than recording mismatched counts, if PostgreSQL rows
   or the Redis key set change while it runs. A busy key space with TTLs would

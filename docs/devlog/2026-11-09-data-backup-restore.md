@@ -161,25 +161,35 @@ kind cluster.
   no `*.dump`, `*.rdb`, or backup directory. The backup root
   `~/minishop-backups` is 700.
 
+- **Provenance:** the timings, sizes, checksums, container IDs, and Pod
+  details above come from devops's runs on 2026-11-09. doc-writer checked the
+  described behaviour (guards, messages, restore method, verification steps,
+  `.gitignore` entries) against the scripts in this branch, but did not rerun
+  any command, so the measured values are not independently verified. The
+  ADR's copy-on-write figure (about 0.8 MB) has no matching entry in this
+  record and is unverified.
+
 ## Documentation
-For doc-writer, not done here:
-- An operator guide section on backing up, restoring, running the drill, the
-  cadence, and the backup location, permissions, and `--keep`.
-- Troubleshooting entries:
-  - "rows changed during pg_dump" and "keyspace changed during the snapshot"
-    (retry when quiet);
-  - a leftover `/data/.minishop-restore` or a busy port 16379 after a killed
-    restore;
-  - "must be mode 700" on `/mnt` drives;
-  - the guard message for kind-learn.
-- `docs/README.md` index entries for ADR 0013 and this record.
-- The legacy runbook step 6 and the #50 follow-up ("needs the #40 backups
-  first") can point to `backup-data.sh`.
+- [Operator guide](../minishop-operator-guide.md#back-up-and-restore-data):
+  "Back up and restore data" covers commands, location and permissions,
+  `--keep`, the drill and self-test, the cadence, and the `--allow-kind-learn`
+  rule.
+- [Troubleshooting](../troubleshooting.md): data changed during the backup, a
+  leftover `/data/.minishop-restore` or busy port 16379, a Redis left empty by
+  a failed restore, "must be mode 700" on `/mnt`, and the kind-learn guard,
+  quoted from the scripts.
+- [Docs index](../README.md): ADR 0013 and this record.
+- [Legacy retirement runbook](../legacy-retirement-runbook.md) step 6,
+  [ADR 0012](../decisions/0012-kindnet-resource-limits.md) Alternatives
+  Considered, and the [Issue #50 record](./2026-11-08-kindnet-iptables-lock.md)
+  Follow-up now point to `backup-data.sh`.
 
 ## Follow-up
 - Owner: accept or change ADR 0013 (no CronJob, the manual cadence, plain
   files under `~/minishop-backups`). Encryption and an off-machine copy are
-  open gaps.
+  open gaps. Also by design and not changed: roles and passwords are not in
+  the backup, and tables that exist only in the target survive a restore with
+  a warning.
 - Owner: run `bash scripts/backup-data.sh --keep 7` before the kind rebuild
   in the #50 follow-up and before #40 parts 2 and 3.
 - Issue #40 parts 2-4 (seeding, rotation, data NetworkPolicies) remain open.
