@@ -197,8 +197,31 @@ sed -i 's/^\(postgresql_md5\.public\.marketitems=\).*/\1000000000000000000000000
 (cd "$forged" && sha256sum -- "$DATA_PG_FILE" "$DATA_REDIS_FILE" "$DATA_MANIFEST_FILE" >"$DATA_SUMS_FILE")
 expect_failure "restore detects rows that differ from the recorded digest" 'row digests differ' \
   bash "$SCRIPT_DIR/restore-data.sh" --from "$forged" "${target[@]}" --only postgresql
+# A target-only table with a foreign key to a restored table blocks --clean;
+# the single transaction must roll back and leave the data as it was.
+psql_in "$prefix-dst-pg" <<<"CREATE TABLE extra_ref (item integer REFERENCES marketitems (id))"
+expect_failure "restore rolls back when a target-only table references a restored table" 'pg_restore failed' \
+  bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir" "${target[@]}" --only postgresql
+[[ "$(psql_in "$prefix-dst-pg" <<<"SELECT count(*) FROM marketitems")" == 100 ]] ||
+  die "the failed restore changed marketitems"
+psql_in "$prefix-dst-pg" <<<"DROP TABLE extra_ref"
 
-# Guards.
+# Guards. Every kubeconfig here points at unreachable loopback ports, and the
+# "live" kubeconfig is a fake one, so a broken guard still reaches no cluster.
+fake_live="$scratch/live-kubeconfig"
+cat >"$fake_live" <<'YAML'
+apiVersion: v1
+kind: Config
+clusters:
+  - name: kind-learn
+    cluster: { server: "https://127.0.0.1:2" }
+contexts:
+  - name: kind-learn
+    context: { cluster: kind-learn, user: nobody }
+users:
+  - name: nobody
+    user: {}
+YAML
 fake_kubeconfig="$scratch/kubeconfig"
 cat >"$fake_kubeconfig" <<'YAML'
 apiVersion: v1
@@ -206,19 +229,45 @@ kind: Config
 clusters:
   - name: kind-learn
     cluster: { server: "https://127.0.0.1:1" }
+  - name: renamed
+    cluster: { server: "https://127.0.0.1:2" }
 contexts:
   - name: kind-learn
     context: { cluster: kind-learn, user: nobody }
   - name: alias
     context: { cluster: kind-learn, user: nobody }
+  - name: same-server
+    context: { cluster: renamed, user: nobody }
 users:
   - name: nobody
     user: {}
 YAML
+export MINISHOP_LIVE_KUBECONFIG="$fake_live"
 expect_failure "restore refuses kind-learn without --allow-kind-learn" 'refusing to restore into the live cluster' \
   bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir" --kubeconfig "$fake_kubeconfig" --context kind-learn
 expect_failure "restore refuses a context that points at the kind-learn cluster" 'refusing to restore into the live cluster' \
   bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir" --kubeconfig "$fake_kubeconfig" --context alias
+expect_failure "restore refuses a renamed context with the kind-learn API server URL" 'uses the kind-learn API server' \
+  bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir" --kubeconfig "$fake_kubeconfig" --context same-server
+# A target that passes the name and URL checks but has kind-learn's node.
+# A stub kubectl answers the kubeconfig reads and the node lookup, and fails
+# on any other call.
+mkdir -m 700 "$scratch/bin"
+cat >"$scratch/bin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"--kubeconfig $MINISHOP_LIVE_KUBECONFIG config view"*) echo https://127.0.0.1:4 ;;
+  *"config view"*".contexts"*) echo throwaway ;;
+  *"config view"*".clusters"*) echo https://127.0.0.1:3 ;;
+  *"get node learn-control-plane"*) echo node/learn-control-plane ;;
+  *) echo "unexpected kubectl call: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod 700 "$scratch/bin/kubectl"
+expect_failure "restore refuses a target that has the node learn-control-plane" 'the target has node learn-control-plane' \
+  env PATH="$scratch/bin:$PATH" bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir" \
+  --kubeconfig "$fake_kubeconfig" --context throwaway
+unset MINISHOP_LIVE_KUBECONFIG
 expect_failure "restore refuses to run without a target" 'name the target' \
   bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir"
 tampered="$scratch/tampered"
@@ -244,6 +293,26 @@ docker exec -u 0 "$prefix-src-redis" chmod 755 /usr/local/bin/redis-cli
 [[ "$(find "$backups" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ]] || die "a failed backup left files behind"
 pass "failed backups leave no partial set"
 
+# A dump cut short keeps its table of contents, so pg_restore --list passes;
+# the full read must catch it. /usr/local/bin is first on the image's PATH.
+# shellcheck disable=SC2016
+docker exec -u 0 "$prefix-src-pg" sh -ec 'printf "%s\n" "#!/bin/sh" \
+  "/usr/lib/postgresql/\$PG_MAJOR/bin/pg_dump \"\$@\" | head -c -200" >/usr/local/bin/pg_dump
+  chmod 755 /usr/local/bin/pg_dump'
+expect_failure "backup rejects a truncated dump that pg_restore --list accepts" 'could not read the whole dump' \
+  bash "$SCRIPT_DIR/backup-data.sh" "${source[@]}" --backup-dir "$backups"
+docker exec -u 0 "$prefix-src-pg" rm -f /usr/local/bin/pg_dump
+[[ -z "$(find "$backups" -mindepth 1 -maxdepth 1 -name '.partial-*')" ]] || die "a truncated dump left a partial set"
+
+# A clock that stepped back must not create a set older than the newest one.
+future="$backups/29991231T235959Z"
+mkdir -m 700 "$future"
+: >"$future/$DATA_SUMS_FILE"
+expect_failure "backup refuses a stamp older than the newest set" 'not after the newest set' \
+  bash "$SCRIPT_DIR/backup-data.sh" "${source[@]}" --backup-dir "$backups" --keep 1
+[[ -f "$set_dir/$DATA_SUMS_FILE" ]] || die "the refused backup pruned an existing set"
+rm -rf -- "$future"
+
 # Pruning keeps the newest N complete sets.
 sleep 1
 bash "$SCRIPT_DIR/backup-data.sh" "${source[@]}" --backup-dir "$backups" >/dev/null
@@ -253,4 +322,54 @@ mapfile -t sets < <(find "$backups" -mindepth 1 -maxdepth 1 -type d -printf '%f\
 [[ ${#sets[@]} -eq 2 && "${sets[0]}" > "$(basename "$set_dir")" ]] ||
   die "--keep 2 left: ${sets[*]}"
 pass "--keep 2 pruned the oldest set"
+
+# Keys with a TTL: counts may only fall, and the keys without a TTL must match.
+redis_in "$prefix-src-redis" -n 1 SET session:1 x EX 3600 >/dev/null
+sleep 1
+bash "$SCRIPT_DIR/backup-data.sh" "${source[@]}" --backup-dir "$backups" >/dev/null
+ttl_set=$(find "$backups" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1)
+grep -qx 'redis_expires=1' "$backups/$ttl_set/$DATA_MANIFEST_FILE" || die "the TTL key was not recorded"
+ttl_out=$(bash "$SCRIPT_DIR/restore-data.sh" --from "$backups/$ttl_set" "${target[@]}" --only redis)
+grep -q 'keys without a TTL match' <<<"$ttl_out" || die "the TTL restore did not take the TTL path"
+pass "a set with TTL keys restores and keeps every key without a TTL"
+
+# The temporary port. A password-protected server already on 16379 must make
+# the restore stop, without the probe sending it the target's password.
+# shellcheck disable=SC2016
+docker exec "$prefix-dst-redis" sh -ec 'umask 077
+  od -An -tx1 -N16 /dev/urandom | tr -d " \n" >/tmp/occupant-pw
+  printf "requirepass %s\n" "$(cat /tmp/occupant-pw)" | redis-server - --port 16379 \
+    --bind 127.0.0.1 --save "" --appendonly no --daemonize yes --logfile /tmp/occupant.log'
+# shellcheck disable=SC2016
+wait_until "the occupant on 16379" docker exec "$prefix-dst-redis" sh -c \
+  'REDISCLI_AUTH="$(cat /tmp/occupant-pw)" redis-cli -p 16379 PING | grep -q PONG'
+expect_failure "restore stops when the temporary port is taken" 'port 16379 is in use' \
+  bash "$SCRIPT_DIR/restore-data.sh" --from "$backups/$ttl_set" "${target[@]}" --only redis
+# shellcheck disable=SC2016
+denied=$(docker exec "$prefix-dst-redis" sh -c \
+  'REDISCLI_AUTH="$(cat /tmp/occupant-pw)" redis-cli -p 16379 INFO stats | tr -d "\r" | sed -n "s/^acl_access_denied_auth://p"')
+[[ "$denied" == 0 ]] || die "the port probe tried to authenticate to the occupant ($denied denied)"
+pass "the port probe sends no password to a server on the port"
+bash "$SCRIPT_DIR/restore-data.sh" --from "$backups/$ttl_set" "${target[@]}" --only redis --restore-port 16380 >/dev/null
+pass "--restore-port moves the temporary server"
+# shellcheck disable=SC2016
+docker exec "$prefix-dst-redis" sh -c \
+  'REDISCLI_AUTH="$(cat /tmp/occupant-pw)" redis-cli -p 16379 SHUTDOWN NOSAVE >/dev/null 2>&1 || true; rm -f /tmp/occupant-pw'
+# A temporary server that cannot bind must fail at once, not after the sync
+# timeout. A wrapper first on the image's PATH (/usr/local/sbin) appends a bind
+# to an address the container does not have (TEST-NET-1); the last --bind wins.
+# The running target server is not affected.
+# shellcheck disable=SC2016
+docker exec -u 0 "$prefix-dst-redis" sh -ec 'printf "%s\n" "#!/bin/sh" \
+  "exec /usr/local/bin/redis-server \"\$@\" --bind 192.0.2.1" >/usr/local/sbin/redis-server
+  chmod 755 /usr/local/sbin/redis-server'
+started_at=$SECONDS
+expect_failure "restore fails fast when the temporary server cannot listen" 'could not listen' \
+  bash "$SCRIPT_DIR/restore-data.sh" --from "$backups/$ttl_set" "${target[@]}" --only redis
+docker exec -u 0 "$prefix-dst-redis" rm -f /usr/local/sbin/redis-server
+[[ $((SECONDS - started_at)) -lt 30 ]] || die "the bind failure took $((SECONDS - started_at)) s to report"
+[[ -z "$(docker exec "$prefix-dst-redis" ls -A /data/.minishop-restore 2>/dev/null)" ]] ||
+  die "the failed restore left /data/.minishop-restore"
+[[ "$(redis_in "$prefix-dst-redis" INFO replication | tr -d '\r' | grep '^role:')" == role:master ]] ||
+  die "the target is not a master after the failed restore"
 printf 'All backup and restore tests passed.\n'
