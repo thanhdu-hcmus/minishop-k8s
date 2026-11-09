@@ -201,6 +201,47 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   `context "kind-learn" does not exist` or shows an empty variable. **Cause:** the
   outer shell expanded `$` expressions before the inner bash ran. **Fix:** keep any
   WSL command containing `$` in a script file and run that file.
+- **Symptom:** `scripts/backup-data.sh` stops with `Error: PostgreSQL rows
+  changed during pg_dump; retry when writes are quiet` or `Error: Redis
+  keyspace changed during the snapshot (<n> live, <m> in the RDB); retry`, and
+  no backup set is left. **Cause:** the script counts and digests rows and keys
+  before and after the dump and refuses a set taken while data changed, for
+  example during `POST /upload`. **Fix:** wait until nothing writes, then run
+  the backup again. A key space that keeps changing (keys with TTLs) needs a
+  different check; see [ADR 0013](./decisions/0013-data-backup-restore.md).
+- **Symptom:** after a killed or interrupted `scripts/restore-data.sh`, the
+  next restore fails with `/data/.minishop-restore is left from an interrupted
+  restore; check no temporary redis-server runs on port 16379, then remove it`
+  or `port 16379 is in use in the Redis container`, followed by `Error: Redis
+  restore failed`. **Cause:** the restore stages the snapshot in
+  `/data/.minishop-restore` and serves it from a temporary `redis-server` on
+  `127.0.0.1:16379` inside the target Redis container. Its cleanup trap did
+  not run. **Fix:** in the target Redis container, check whether a
+  `redis-server` still listens on port 16379 and stop it, confirm the target
+  is not still a replica (`INFO replication` shows `role:master`, otherwise run
+  `REPLICAOF NO ONE`), remove `/data/.minishop-restore`, then rerun the
+  restore. These steps are taken from the script's messages and cleanup trap;
+  they have not been run as a recorded recovery.
+- **Symptom:** a Redis restore fails part-way (for example `Error: Redis
+  restore failed` or a timeout while syncing) and the target Redis has no keys
+  or fewer keys than the backup. **Cause:** the target drops its data when it
+  starts replicating from the temporary server, before the snapshot is fully
+  loaded. **Fix:** fix the reported cause and run the same restore again
+  (`--only redis` is enough); the target stays empty until a restore succeeds.
+- **Symptom:** `Error: <dir> must be mode 700 (chmod 700 it; Windows drives
+  under /mnt cannot enforce this)` from `scripts/backup-data.sh`. **Cause:**
+  the backup root is not private. On a Windows drive under `/mnt` mounted
+  without metadata, `chmod` has no effect, so the check can never pass.
+  **Fix:** use a directory on the WSL file system, such as the default
+  `~/minishop-backups`, and `chmod 700` it.
+- **Symptom:** `Error: refusing to restore into the live cluster kind-learn
+  (context <context>); this overwrites its data. Pass --allow-kind-learn only
+  on an owner decision (docs/decisions/0013-data-backup-restore.md)`.
+  **Cause:** the restore target is the context `kind-learn`, or another
+  context whose cluster is `kind-learn`. This is the intended guard. **Fix:**
+  name a throwaway cluster or Docker containers as the target. Add
+  `--allow-kind-learn` only when the owner has decided to roll the live data
+  back.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
@@ -221,3 +262,4 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
 - [Issue #39 backend failure handling record](./devlog/2026-11-07-backend-failure-handling.md)
 - [Issue #38 ingress ownership record](./devlog/2026-11-08-ingress-ownership.md)
 - [Issue #50 kindnet iptables lock record](./devlog/2026-11-08-kindnet-iptables-lock.md)
+- [Issue #40 data backup and restore record](./devlog/2026-11-09-data-backup-restore.md)
