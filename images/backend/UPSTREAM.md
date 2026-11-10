@@ -32,6 +32,12 @@ Each modified file carries a "Derived from ... Modified for ..." header.
   are bounded, and a readiness ping and SQLSTATE helper were added (#39).
 - `app/dependency.js` (new, #39): deadlines, timeout parsing, and the
   unavailable-versus-internal error classification.
+- `seed.js` (new, #40): the seed command for the chart's opt-in seed Job.
+  `app/postgresql.js` gained `seedData`, which creates `marketItems` only if it
+  is missing and inserts the seed rows only into an empty table, in one
+  transaction under an advisory lock. `app/redis.js` gained `seedData`, which
+  writes review keys with `SET ... NX`. Neither drops, truncates, or
+  overwrites data.
 
 ## Runtime notes
 

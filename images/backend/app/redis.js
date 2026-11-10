@@ -1,7 +1,8 @@
 /*
  * Derived from Apache-2.0 kumahq/kuma-demo api/app/redis.js at db9e133.
  * Modified for Redis v6, optional REDIS_PASSWORD support, and bounded
- * connection and command waits; see ../LICENSE.
+ * connection and command waits, and for a non-destructive seed (#40);
+ * see ../LICENSE.
  */
 
 const items = require("../db/items.json");
@@ -115,10 +116,24 @@ const importData = async () => {
   );
 };
 
+// Non-destructive seed for the seed Job (#40): SET ... NX writes a review key only
+// when it does not exist, so existing keys are never overwritten. Resolves
+// { written, kept }, the number of keys created and the number already present.
+const seedData = async () => {
+  const replies = await withClient(client =>
+    Promise.all(items.map(item =>
+      client.set(String(item.index), JSON.stringify(item.reviews), { condition: "NX" })
+    ))
+  );
+  const written = replies.filter(reply => reply === "OK").length;
+  return { written, kept: replies.length - written };
+};
+
 module.exports = {
   createClient,
   redisOptions,
   search,
   ping,
-  importData
+  importData,
+  seedData
 };
