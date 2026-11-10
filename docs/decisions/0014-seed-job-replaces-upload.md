@@ -44,17 +44,30 @@ the owner accepts it on merge.
   `RuntimeDefault` seccomp, `automountServiceAccountToken: false`; requests
   50m/64Mi, limits 250m/128Mi; credentials from the existing app Secret via
   `secretKeyRef`.
-- **The validator no longer seeds.** `validate-app.sh` asserts `/upload` is
-  disabled and refuses to run against the three published digests that still
-  serve it.
+- **The validator no longer seeds.** `validate-app.sh` asserts `POST /upload`
+  answers 404 without changing items, but only when every backend container
+  passes a positive check: its requested image and its running image ID are
+  both anchored `ghcr.io/thanhdu-hcmus/minishop-backend@sha256:<64 hex>`
+  references and it contains `/usr/src/app/seed.js`, which only #40 and later
+  images ship. The
+  four digests that pre-#40 publish runs produced (#24 `e87390d3...`, #43
+  `44a87d71...`, #46 `599480a8...`, #48 `f10f726b...`, from `gh run list
+  --workflow=backend-image.yml --branch main`) are a second guard only. Any
+  other image fails the validator.
 
 ## Consequences
 - The chart still pins `599480a8...`, which has no `seed.js` and still serves
-  `/upload`. A follow-up pin PR is required before the seed can be enabled or
-  `validate-app.sh` can pass.
+  `/upload`. A follow-up pin PR is required before the seed can be enabled.
+- **Interim window.** Between this merge and the deployed pin PR, the backend
+  runs a pre-#40 image. `validate-app.sh` then prints a WARNING, skips only the
+  `POST /upload` probe, still runs the items and reviews checks, and exits 0,
+  so validation on `main` keeps passing. The 404 assertion only runs once the
+  pin is deployed.
 - After the 24 h TTL, the next `helm upgrade` reruns the Job; harmless because
   it is idempotent.
-- A deliberately emptied table is reseeded if the Job runs.
+- A deliberately emptied table is reseeded if the Job runs, and a rerun
+  recreates any deliberately deleted Redis review key (`SET NX` writes every
+  absent key). Rows in a non-empty table are never added back.
 - The Job uses the default ServiceAccount, without a token.
 - A future `data`-namespace ingress policy must allow the seed Pod.
 
