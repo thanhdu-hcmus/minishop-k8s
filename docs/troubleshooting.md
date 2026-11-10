@@ -100,8 +100,8 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   image would drop and reseed the table. So it skips that probe when any
   backend container (including one mid-rollout) lacks `/usr/src/app/seed.js`
   or runs a pre-#40 published digest (`e87390d3...`, `44a87d71...`,
-  `599480a8...`, `f10f726b...`). This is expected until the #40 pin PR is
-  deployed. **Fix:** deploy that pin and wait for the rollout to finish; the
+  `599480a8...`, `f10f726b...`). This is expected until the cluster runs the
+  #40 pin (`b0c282b0...`). **Fix:** deploy from `main` and wait for the rollout to finish; the
   next run sends the probe and requires 404.
 - **Symptom:** `validate-app.sh` exits 1 with `Backend Pod ... requests image
   "..."` or `Backend Pod ... image "..."`, then `not a pinned MiniShop backend
