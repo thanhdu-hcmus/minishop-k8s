@@ -24,35 +24,76 @@ kubectl_for_minishop -n webapp rollout status deployment/minishop-backend --time
 kubectl_for_minishop -n webapp rollout status deployment/minishop-frontend --timeout=180s
 
 # Before #40, POST /upload dropped and recreated marketItems. The probe below sends
-# it to prove the route is gone, so first refuse to run against any backend Pod
-# whose image is not a MiniShop backend build or is one of the published digests
-# that still serve that route.
+# it to prove the route is gone, so it is sent only when every backend container
+# runs a #40 or later image. The primary check is positive: #40 images ship
+# /usr/src/app/seed.js and older ones do not. The digests every pre-#40 publish
+# run produced (backend-image.yml on main: #24, #43, #46, #48) are a second guard.
+# A pre-#40 image only skips the POST probe, so validation still passes between
+# the #40 merge and its digest pin; anything that is not a pinned MiniShop
+# backend image fails. Both the requested image (spec) and the running one
+# (imageID) are checked: the runtime reports imageID by content, so a Pod that
+# requests the same bytes under another name still shows the ghcr.io name.
+backend_spec_pattern='^ghcr\.io/thanhdu-hcmus/minishop-backend@sha256:[0-9a-f]{64}$'
+backend_image_pattern='^(docker-pullable://)?ghcr\.io/thanhdu-hcmus/minishop-backend@sha256:[0-9a-f]{64}$'
 upload_enabled_digests=(
   sha256:e87390d3420f8e51e2df726f9efcc9e3946c40174723a045243f2dc3eeff62f4
   sha256:44a87d71dda575c0e062e1474eafbe5885169aeb0ce4c123b81f2b497dd1d7af
   sha256:599480a80f5fa26755cf368c0b13fdc9406580421477e8970981c39fc2f35114
+  sha256:f10f726b3b9ccac97f0aeb56aef94a1756031ff4d36deed8ef44cefedb71e05a
 )
 backend_selector=app.kubernetes.io/component=minishop-backend,app.kubernetes.io/name=minishop
-backend_images=$(kubectl_for_minishop -n webapp get pods --selector "$backend_selector" -o \
-  'jsonpath={range .items[*]}{range .status.containerStatuses[*]}{.imageID}{"\n"}{end}{end}')
-if [[ -z "$backend_images" ]]; then
-  printf '%s\n' 'No backend Pod reports an image; cannot check POST /upload safely.' >&2
+# One line per container: "spec <pod> <container> <image>" for each requested
+# image, then "status <pod> <container> <imageID>" for each running one. $pod is
+# a go-template variable, not a shell one, so the template stays in single quotes.
+# shellcheck disable=SC2016
+backend_containers=$(kubectl_for_minishop -n webapp get pods --selector "$backend_selector" -o \
+  'go-template={{range .items}}{{$pod := .metadata.name}}{{range .spec.containers}}spec {{$pod}} {{.name}} {{.image}}{{"\n"}}{{end}}{{range .status.containerStatuses}}status {{$pod}} {{.name}} {{.imageID}}{{"\n"}}{{end}}{{end}}')
+if ! grep -q '^status ' <<<"$backend_containers"; then
+  printf '%s\n' 'No backend Pod reports a container; cannot check POST /upload safely.' >&2
   exit 1
 fi
-while IFS= read -r image_id; do
-  if [[ "$image_id" != *ghcr.io/thanhdu-hcmus/minishop-backend@sha256:* ]]; then
-    printf 'Backend Pod image %s is not a MiniShop backend build; not sending POST /upload.\n' \
-      "$image_id" >&2
-    exit 1
-  fi
-  for digest in "${upload_enabled_digests[@]}"; do
-    if [[ "$image_id" == *"@$digest" ]]; then
-      printf 'Backend Pod image %s still serves the destructive POST /upload; deploy the #40 image first.\n' \
-        "$image_id" >&2
+legacy_pods=()
+while read -r kind pod container image_id; do
+  if [[ "$kind" == spec ]]; then
+    if [[ ! "$image_id" =~ $backend_spec_pattern ]]; then
+      printf 'Backend Pod %s container %s requests image "%s", not a pinned MiniShop backend image.\n' \
+        "$pod" "$container" "${image_id:-}" >&2
       exit 1
     fi
+    continue
+  fi
+  if [[ ! "$image_id" =~ $backend_image_pattern ]]; then
+    printf 'Backend Pod %s container %s image "%s" is not a pinned MiniShop backend image.\n' \
+      "$pod" "$container" "${image_id:-}" >&2
+    exit 1
+  fi
+  # Prints present or absent; anything else means exec failed, so fail closed.
+  seed_file=$(kubectl_for_minishop -n webapp exec "pod/$pod" -c "$container" -- \
+    sh -c 'if test -f /usr/src/app/seed.js; then echo present; else echo absent; fi' \
+    </dev/null) || seed_file=
+  case "$seed_file" in
+    present) ;;
+    absent)
+      legacy_pods+=("$pod")
+      continue
+      ;;
+    *)
+      printf 'Could not check backend Pod %s for seed.js; not sending POST /upload.\n' "$pod" >&2
+      exit 1
+      ;;
+  esac
+  for digest in "${upload_enabled_digests[@]}"; do
+    if [[ "$image_id" == *"@$digest" ]]; then
+      legacy_pods+=("$pod")
+    fi
   done
-done <<<"$backend_images"
+done <<<"$backend_containers"
+send_upload_probe=true
+if ((${#legacy_pods[@]} > 0)); then
+  send_upload_probe=false
+  printf 'WARNING: backend Pod(s) %s run a pre-#40 image that still serves the destructive POST /upload. Skipping only the POST /upload probe; the read checks still run. Deploy the #40 digest pin to run it.\n' \
+    "${legacy_pods[*]}" >&2
+fi
 
 frontend_probe='const http = require("http");
 const request = (method, path) => new Promise((resolve, reject) => {
@@ -93,16 +134,22 @@ const fingerprint = rows => rows.map(row => {
     throw new Error("frontend to backend to postgresql check failed: HTTP " + items.status +
       code + "; seed an empty database with the chart seed Job (seed.enabled=true)");
   }
-  // The backend no longer serves POST /upload (#40); any 2xx means it does.
-  const upload = await request("POST", "/upload");
-  if (upload.status >= 200 && upload.status < 300) {
-    throw new Error("POST /upload is still enabled (HTTP " + upload.status + ")");
+  // sendUploadProbe is prepended by the script: false while any backend Pod runs
+  // a pre-#40 image, where this request would drop and reseed the table.
+  if (sendUploadProbe) {
+    // #40 removed the route, so Express answers 404; anything else is a failure.
+    const upload = await request("POST", "/upload");
+    if (upload.status !== 404) {
+      throw new Error("POST /upload answered HTTP " + upload.status + ", expected 404");
+    }
+    const after = await getItems();
+    if (!hasItems(after) || fingerprint(after.body) !== fingerprint(items.body)) {
+      throw new Error("items changed after POST /upload");
+    }
+    console.log("POST /upload answered HTTP 404 and changed nothing.");
+  } else {
+    console.log("POST /upload probe skipped (pre-#40 backend image).");
   }
-  const after = await getItems();
-  if (!hasItems(after) || fingerprint(after.body) !== fingerprint(items.body)) {
-    throw new Error("items changed after POST /upload");
-  }
-  console.log("POST /upload answered HTTP " + upload.status + " and changed nothing.");
   const reviews = await request("GET", "/items/" + items.body[0].data.index + "/reviews");
   const reviewList = parse(reviews.body);
   if (reviews.status !== 200 || !Array.isArray(reviewList) || reviewList.length === 0) {
@@ -121,9 +168,13 @@ frontend_pod=$(kubectl_for_minishop -n webapp get pods --selector "$frontend_sel
 printf 'Probing through MiniShop frontend Pod %s.\n' "$frontend_pod"
 
 kubectl_for_minishop -n webapp exec "pod/$frontend_pod" -c frontend -- \
-  node -e "$frontend_probe"
+  node -e "const sendUploadProbe = $send_upload_probe;"$'\n'"$frontend_probe"
 
 kubectl_for_minishop -n webapp get networkpolicy \
   minishop-default-deny minishop-frontend minishop-backend >/dev/null
 
-printf '%s\n' 'MiniShop frontend, backend, and data path validated.'
+if [[ "$send_upload_probe" == true ]]; then
+  printf '%s\n' 'MiniShop frontend, backend, and data path validated.'
+else
+  printf '%s\n' 'MiniShop frontend, backend, and data path validated; POST /upload probe skipped (WARNING above).'
+fi
