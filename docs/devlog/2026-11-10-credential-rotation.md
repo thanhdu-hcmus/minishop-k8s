@@ -137,3 +137,33 @@ is tested only on a throwaway kind cluster.
   `/items` and reviews return 200; a failed rollback, followed by
   `--recover --to old`; `--only postgresql`; and no password, plain or
   base64, and no 64-character hex run, in any output.
+- Not yet run against kind-learn; the owner runs it after the merge (below).
+
+## Features implemented
+- `scripts/rotate-data-credentials.sh` (fdf3c5e): dry run by default,
+  `--apply`, `--only postgresql|redis`, automatic rollback, and
+  `--recover DIR --to old|new`.
+- `scripts/test-data-rotation.sh` (7d3f224): self-test on a throwaway kind
+  cluster.
+- Decision: [ADR 0015](../decisions/0015-data-credential-rotation.md)
+  (proposed). Operator steps:
+  [operator guide](../minishop-operator-guide.md#rotate-data-passwords).
+  Failure modes: [troubleshooting](../troubleshooting.md).
+
+## Owner steps after merge
+Run in WSL on an up-to-date `main`:
+1. `bash scripts/backup-data.sh`
+2. `bash scripts/rotate-data-credentials.sh --context kind-learn` (dry run);
+   review the plan.
+3. The same command with `--apply`. Expect a few seconds of auth failures.
+4. `bash scripts/validate-app.sh`
+5. On `ROLLBACK INCOMPLETE`, run the printed `--recover` command.
+6. Update or discard any stored `MINISHOP_*_PASSWORD` values.
+
+## Follow-ups
+- Rotate `minishop-data-credentials` on kind-learn (closes out the discovery
+  incident above).
+- Retire or rotate `data/postgres-creds`, `webapp/postgres-app-creds`, and the
+  CNPG certificates at runbook step 6, sooner if the transcript is shared.
+- Issue #40 part 4: data NetworkPolicy.
+- PR number: not recorded at the time of writing.
