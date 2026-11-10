@@ -345,11 +345,18 @@ scope. No dependencies, CI, storage, credentials, or HPA settings were changed.
 > [operator guide](./minishop-operator-guide.md#inspect-and-validate).
 
 > **Update (Issue #40, 2026-11-10):** `validate-app.sh` no longer seeds. It
-> refuses to run against backend images that still serve `POST /upload`, fails
-> with a seed hint when items are missing, and asserts that `POST /upload`
-> answers non-2xx without changing items. Seeding moved to the opt-in chart
+> fails with a seed hint when items are missing, and asserts that `POST /upload`
+> answers 404 without changing items, but only when every backend container
+> holds `seed.js` (a #40 or later image). On a pre-#40 image it warns, skips
+> that probe, and still runs the read checks. Seeding moved to the opt-in chart
 > seed Job. The changed script was not run against kind-learn; see the
 > [seed Job record](./devlog/2026-11-10-seed-job.md).
 
 The cluster uses Kind's `kindnet`, which does not enforce NetworkPolicies; the
 temporary policies' presence does not establish enforcement behavior.
+
+> **Qualifier (Issue #40, 2026-11-10):** the statement above is from this
+> 2026-09 run and is not re-verified on kind-learn. On a throwaway kind v0.30.0
+> cluster (`kindest/node:v1.30.13`), default-deny was enforced: without
+> NetworkPolicy `minishop-seed` the seed Job timed out, and with it the Job
+> succeeded. See the [seed Job record](./devlog/2026-11-10-seed-job.md).
