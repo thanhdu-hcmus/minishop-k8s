@@ -39,3 +39,5 @@ scoped cleanup.
 33. [Ingress ownership record](./devlog/2026-11-08-ingress-ownership.md) — Issue #38 Ingress, selectors, pinned ingress-nginx path, preflight, and read-only verification.
 34. [kindnet resource limits decision](./decisions/0012-kindnet-resource-limits.md) — proposed T2 decision to replace the node image's kindnet limits with 100m/128Mi requests, a 256Mi memory limit, no CPU limit, and `system-node-critical` priority.
 35. [kindnet iptables lock record](./devlog/2026-11-08-kindnet-iptables-lock.md) — Issue #50 diagnosis of the cgroup thrash that held `/run/xtables.lock` after Docker restarts, `tune-kindnet-resources.sh`, and throwaway-cluster verification.
+36. [Seed Job decision](./decisions/0013-seed-job-replaces-upload.md) — proposed T2 decision to remove `POST /upload` and seed through an opt-in, idempotent chart Job rather than a Helm hook.
+37. [Seed Job record](./devlog/2026-11-10-seed-job.md) — Issue #40 part 2 seed command, `/upload` removal, seed Job, `validate-app.sh` guard, and throwaway-cluster verification.
