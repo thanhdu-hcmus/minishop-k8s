@@ -2,7 +2,7 @@
  * Derived from Apache-2.0 kumahq/kuma-demo api/index.js at db9e133.
  * Modified so POST /upload waits for both imports and reports failure (#43),
  * PostgreSQL and Redis failures return 503 or 500, and /live and /ready
- * exist (#39); see LICENSE and UPSTREAM.md.
+ * exist (#39), and POST /upload is removed (#40); see LICENSE and UPSTREAM.md.
  */
 
 const redis = require("./app/redis");
@@ -88,16 +88,9 @@ app.get("/ready", async (req, res) => {
   res.status(ready ? 200 : 503).json({ status: ready ? "ok" : "unavailable", checks });
 });
 
-app.post("/upload", async (req, res) => {
-  try {
-    await redis.importData();
-    await postgresql.importData();
-    res.end("Mock data updated in Redis and PostgreSQL!");
-  } catch (err) {
-    logger.error({ err }, 'mock data import failed');
-    sendDependencyError(res, err, "Mock data import failed");
-  }
-});
+// POST /upload is intentionally not served (#40). It was unauthenticated and
+// dropped and recreated marketItems; the chart's seed Job (seed.js) seeds an
+// empty database instead. Express answers 404 for the unmounted route.
 
 app.get("/items", async (req, res) => {
   logger.info('get on /items');

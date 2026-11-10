@@ -2,8 +2,8 @@
  * Derived from Apache-2.0 kumahq/kuma-demo api/app/postgresql.js at db9e133.
  * Modified for a transactional, parameterized import (#43), and for logging idle
  * pool errors instead of exiting, bounded query and lookup waits, the SQLSTATE
- * helper, and a readiness ping (#39), and for a non-destructive seed (#40);
- * see ../LICENSE and ../UPSTREAM.md.
+ * helper, and a readiness ping (#39). The destructive import was replaced by a
+ * non-destructive seed (#40); see ../LICENSE and ../UPSTREAM.md.
  */
 
 const items = require("../db/items.json");
@@ -58,57 +58,13 @@ const search = async (itemName) => {
 };
 
 // Readiness check: a round trip that needs a connection but no table, so an
-// unseeded database is still ready to accept POST /upload.
+// unseeded database is still ready before the seed Job runs.
 const ping = async (timeoutMs) =>
   withDeadline(
     pool.query({ text: "SELECT 1", query_timeout: timeoutMs }),
     timeoutMs,
     `PostgreSQL readiness check timed out after ${timeoutMs} ms`
   );
-
-const importData = async () => {
-  const client = await pool.connect();
-  // pg-pool detaches its idle listener at checkout, so without this an 'error' event
-  // from a dropped connection is unhandled and kills the process. The failed query
-  // still rejects, so this listener only logs.
-  const onClientError = (error) => {
-    logger.error({ err: error }, 'postgresql client error during import');
-  };
-  client.on("error", onClientError);
-  let rollbackError;
-  try {
-    await client.query("BEGIN");
-    await client.query("DROP TABLE IF EXISTS marketItems");
-    await client.query(
-      `CREATE TABLE marketItems(
-        index INTEGER PRIMARY KEY,
-        name TEXT,
-        data JSONB
-      )`
-    );
-    for (const item of items) {
-      await client.query(
-        "INSERT INTO marketItems VALUES($1, $2, $3)",
-        [item.index, item.name, JSON.stringify(item)]
-      );
-    }
-    await client.query("COMMIT");
-  } catch (error) {
-    logger.error({ err: error }, 'postgresql import failed');
-    try {
-      await client.query("ROLLBACK");
-    } catch (failure) {
-      logger.error({ err: failure }, 'postgresql rollback failed');
-      rollbackError = failure;
-    }
-    throw error;
-  } finally {
-    logger.debug("Release");
-    client.removeListener("error", onClientError);
-    // Passing an error makes the pool discard a connection left in an unknown state.
-    client.release(rollbackError);
-  }
-};
 
 // Transaction-scoped advisory lock key that serializes concurrent seed runs, for
 // example a Job retry that overlaps a slow first attempt. Any constant works as
@@ -122,6 +78,9 @@ const SEED_LOCK_KEY = 4046;
 // Resolves { inserted, skipped }; skipped is true when the table already had rows.
 const seedData = async () => {
   const client = await pool.connect();
+  // pg-pool detaches its idle listener at checkout, so without this an 'error' event
+  // from a dropped connection is unhandled and kills the process. The failed query
+  // still rejects, so this listener only logs.
   const onClientError = (error) => {
     logger.error({ err: error }, 'postgresql client error during seed');
   };
@@ -163,6 +122,7 @@ const seedData = async () => {
     throw error;
   } finally {
     client.removeListener("error", onClientError);
+    // Passing an error makes the pool discard a connection left in an unknown state.
     client.release(rollbackError);
   }
 };
@@ -173,6 +133,5 @@ module.exports = Object.assign({
   sqlState,
   search,
   ping,
-  importData,
   seedData,
 });

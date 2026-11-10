@@ -110,12 +110,6 @@ const search = async itemId => withClient(client => client.get(itemId));
 // Readiness check: connect, authenticate, and PING within timeoutMs.
 const ping = async timeoutMs => withClient(client => client.ping(), { timeoutMs });
 
-const importData = async () => {
-  await withClient(client =>
-    Promise.all(items.map(item => client.set(String(item.index), JSON.stringify(item.reviews))))
-  );
-};
-
 // Non-destructive seed for the seed Job (#40): SET ... NX writes a review key only
 // when it does not exist, so existing keys are never overwritten. Resolves
 // { written, kept }, the number of keys created and the number already present.
@@ -134,6 +128,5 @@ module.exports = {
   redisOptions,
   search,
   ping,
-  importData,
   seedData
 };
