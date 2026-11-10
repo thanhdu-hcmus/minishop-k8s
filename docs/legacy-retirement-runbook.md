@@ -253,6 +253,12 @@ is irreversible from this runbook because its value is not exported.
 ## Step 6: Back up legacy data (no deletion)
 Run this even before Issue #42 decides, so a copy exists.
 
+This step covers only the legacy objects. The Helm-owned
+`minishop-postgresql` and `minishop-redis` are backed up with
+`scripts/backup-data.sh` (Issue #40; see the
+[operator guide](./minishop-operator-guide.md#back-up-and-restore-data)).
+Take one of those too before any retirement step.
+
 CNPG `kumademo`. Check, and record the count (100 on 2026-11-08):
 
 ```bash

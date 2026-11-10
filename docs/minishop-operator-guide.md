@@ -302,7 +302,7 @@ On this image:
   reviews still return 200 with `{}`.
 - `POST /upload` is still served: it is unauthenticated and drops the table
   first. The #40 backend removes it, but only after a pin PR deploys that
-  image; until then `validate-app.sh` refuses to run.
+  image; until then `validate-app.sh` warns and skips its `/upload` probe.
 - The liveness probe uses `GET /live` (process only) and the readiness probe
   uses `GET /ready` (PostgreSQL and Redis), in both the chart and the raw
   manifest. Probe timings are unchanged.
@@ -317,9 +317,175 @@ On this image:
   [ADR 0010](./decisions/0010-backend-dependency-health.md) and the
   [Issue #47 record](./devlog/2026-11-08-health-image-pin.md).
 
-Known gaps: the `minishop-frontend` Service and Deployment selectors still
-overlap legacy frontend Pods, and the pinned image still serves the destructive
+Known gap: the pinned image still serves the unauthenticated, destructive
 `POST /upload` until the #40 image is pinned and deployed.
+The legacy frontend that overlapped the `minishop-frontend` selectors was
+retired by the Issue #38 runbook.
+
+## Monitoring
+
+The `monitoring` Helm release (`kube-prometheus-stack-69.8.2`) runs Prometheus,
+Grafana, Alertmanager, kube-state-metrics, and node-exporter. Prometheus scrapes
+every `minishop-backend` Pod at `/metrics` through the `minishop-backend`
+ServiceMonitor. None of these UIs has an Ingress, so reach them with a
+port-forward. Run each command in its own WSL terminal from the repository root
+and keep it running:
+
+```bash
+export KUBECONFIG=./.kube/config
+kubectl --context kind-learn -n monitoring port-forward svc/monitoring-grafana 3000:80
+kubectl --context kind-learn -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
+kubectl --context kind-learn -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9093:9093
+```
+
+Then open Grafana at <http://127.0.0.1:3000>, Prometheus at
+<http://127.0.0.1:9090>, and Alertmanager at <http://127.0.0.1:9093> from a
+Windows browser.
+
+Grafana's user is `admin`. Its password is in Secret
+`monitoring/monitoring-grafana`. Read it only in your own terminal, and never
+paste it into docs, Issues, or logs:
+
+```bash
+kubectl --context kind-learn -n monitoring get secret monitoring-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+Where to look:
+
+- **Grafana → Dashboards → MiniShop Backend**: the MiniShop dashboard. It
+  currently has one panel, backend CPU.
+- **Kubernetes / Compute Resources / Namespace (Pods)**: CPU and memory per Pod.
+  Choose `webapp` or `data`.
+- **Node Exporter / Nodes**: load, memory, and disk for each kind node.
+- **Prometheus → Graph**: the backend exports `http_request_duration_seconds`
+  with `method` and `status_code` labels.
+
+```promql
+# Requests per second
+sum(rate(http_request_duration_seconds_count{namespace="webapp"}[5m]))
+# Requests per second by status code
+sum by (status_code) (rate(http_request_duration_seconds_count{namespace="webapp"}[5m]))
+# 95th percentile latency
+histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="webapp"}[5m])))
+# Backend container restarts
+kube_pod_container_status_restarts_total{namespace="webapp"}
+```
+
+The kubelet's `/ready` probe requests are counted as well. A `503` series
+usually means a dependency was down, for example during a Docker restart.
+
+**Alerts.** The MiniShop rules are `MiniShopBackendRestarting` and
+`MiniShopBackendRestart`, in the `minishop-backend` and
+`minishop-backend-restarts` PrometheusRules. These alerts are expected on this
+cluster and are not MiniShop faults:
+
+- `Watchdog` and `InfoInhibitor` always fire by design. They prove that the
+  alert pipeline works.
+- `KubeProxyDown` and `TargetDown` (kube-system) are kind false positives.
+  kind binds kube-proxy's metrics endpoint to `127.0.0.1`, so Prometheus cannot
+  scrape it. kube-proxy itself works.
+- `CPUThrottlingHigh` in `monitoring` means some monitoring Pods reach their CPU
+  limits. It is worth reviewing, but it is not an outage.
+
+Known monitoring gaps:
+
+- The MiniShop dashboard lacks request rate, error rate, latency, and readiness
+  panels.
+- The `monitoring/backend` ServiceMonitor still selects the legacy backend
+  retired in Issue #38, so it matches nothing.
+- The kind false positives above are not silenced.
+- Alertmanager receivers have not been checked. Alerts may be visible only in
+  its UI.
+
+## Back up and restore data
+
+Issue #40 part 1 added scripts that back up and restore the Helm-owned
+`data/minishop-postgresql` and `data/minishop-redis`. They do not cover the
+legacy CNPG cluster or the legacy `redis` StatefulSet; see
+[runbook step 6](./legacy-retirement-runbook.md#step-6-back-up-legacy-data-no-deletion)
+for those. Run them from WSL. The design is in
+[ADR 0013](./decisions/0013-data-backup-restore.md) (proposed).
+
+Back up kind-learn. This only reads from the cluster:
+
+```bash
+bash scripts/backup-data.sh --keep 7
+```
+
+- Source: context `kind-learn`, namespace `data`, by default. `--context`,
+  `--kubeconfig`, `--namespace`, `--pg-pod`, and `--redis-pod` change it.
+  `--docker --pg-container NAME --redis-container NAME` reads from Docker
+  containers instead.
+- It runs `pg_dump -Fc` and `redis-cli --rdb -` through `kubectl exec`. It
+  checks the files from the chart's pinned images with `pg_restore --list`, a
+  full read of the dump (`pg_restore -f /dev/null`; `--list` alone reads only
+  the table of contents and passes a truncated dump), and `redis-check-rdb`.
+  It fails if row counts, row digests, or the Redis key set change during the
+  run.
+- Location: `~/minishop-backups/<UTC stamp>/`, or `--backup-dir DIR` or
+  `MINISHOP_BACKUP_DIR`. The directory must be outside the repository, owned
+  by you, and mode 700, so Windows drives under `/mnt` are refused. Files are
+  written with umask 077. Each set holds `postgresql.dump`, `redis.rdb`,
+  `manifest.txt` (counts, digests, versions, images), and `SHA256SUMS`. The set
+  is built as `.partial-<stamp>-<pid>` and renamed only after every check
+  passes. `SHA256SUMS` catches corruption, not deliberate tampering: anyone who
+  can write the set can rewrite it.
+- Output: counts, sizes, and checksums only.
+- `--keep N`: after a successful backup, delete all but the newest N complete
+  sets, never the new one. A backup whose UTC stamp does not sort after the
+  newest set (a clock that stepped back) is refused before it writes.
+
+Restore into a target you name. There is no default target:
+
+```bash
+# A throwaway or rebuilt cluster:
+bash scripts/restore-data.sh --from ~/minishop-backups/<stamp> \
+  --kubeconfig <path> --context <context>
+# Docker containers:
+bash scripts/restore-data.sh --from ~/minishop-backups/<stamp> \
+  --docker --pg-container <name> --redis-container <name>
+```
+
+- It checks `SHA256SUMS` first, restores PostgreSQL with a single-transaction
+  `pg_restore --clean`, then loads Redis through a temporary replica source on
+  `127.0.0.1:16379` inside the Redis container (`--restore-port PORT` moves
+  it). Afterwards it checks counts and digests against the manifest.
+  `--only postgresql|redis` restores one component.
+- During the Redis step the target is a read-only replica for a few seconds,
+  so backend writes fail briefly. The script retries `REPLICAOF NO ONE` until
+  the target is master again, and says so on stderr if it never is.
+- The backup holds no roles or passwords; the target keeps its own. Tables
+  that exist only in the target are kept, with a warning. If one of them has a
+  foreign key to a restored table, the restore fails and rolls back; drop or
+  detach it first.
+- **kind-learn rule:** unless `--allow-kind-learn` is given, restore refuses a
+  context named `kind-learn`, one whose cluster is `kind-learn`, one whose API
+  server URL matches cluster `kind-learn` in `./.kube/config`, and any target
+  that has the node `learn-control-plane`. Pass the flag only when the owner
+  has decided to roll the live data back.
+
+Test the scripts and the backups. Both use throwaway containers with no
+network and touch no cluster:
+
+```bash
+bash scripts/test-data-restore.sh                                  # self-test
+bash scripts/test-data-restore.sh --from ~/minishop-backups/<stamp> # restore drill
+```
+
+Cadence (manual; there is no CronJob, see ADR 0013):
+
+- Before any risky change: a cluster rebuild or kind upgrade, a Helm upgrade
+  that touches the data templates, password rotation, a seeding change, a
+  legacy retirement step, or a restore.
+- Otherwise weekly while the cluster is in use, with `--keep 7`.
+- A restore drill once a month.
+- The self-test after any change to the scripts.
+
+Known gaps: backups are unencrypted, there is one copy on the same machine,
+and losing the WSL disk loses them. Failures and fixes are in
+[troubleshooting](./troubleshooting.md); the drill is in the
+[Issue #40 record](./devlog/2026-11-09-data-backup-restore.md).
 
 ## Scoped cleanup
 
@@ -348,3 +514,5 @@ and safe recovery commands are in [resilience validation results](./validation-r
   and [implementation record](./devlog/2026-09-27-platform-rbac-scaling-observability.md).
 - [Pod recovery and persistent data record](./devlog/2026-09-28-pod-recovery-data-persistence.md)
   and [validation results](./validation-results.md).
+- [Data backup and restore decision](./decisions/0013-data-backup-restore.md)
+  and [implementation record](./devlog/2026-11-09-data-backup-restore.md).

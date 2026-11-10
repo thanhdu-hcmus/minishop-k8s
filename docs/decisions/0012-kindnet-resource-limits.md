@@ -72,7 +72,8 @@ limits. Status is proposed; the owner accepts it on merge.
   fail. It needs a new cluster, and on Kubernetes 1.30 nftables mode is alpha.
 - **A newer kind and node image (v0.33.0 or later).** This is the upstream fix,
   but it also changes the Kubernetes minor version and needs a new cluster with
-  backups first. It stays an owner decision.
+  backups first (now `scripts/backup-data.sh`, see
+  [ADR 0013](0013-data-backup-restore.md)). It stays an owner decision.
 - **Ending hung listings with a helper script.** A new hung listing appeared
   within about three minutes, so this treats the symptom only. Killing a
   listing also makes kindnetd panic and restart (seen on learn-worker2 at about
