@@ -196,14 +196,47 @@ bash scripts/validate-helm.sh
 ```
 
 The two validators render the dev/prod configurations and run schema checks;
-they do not install or upgrade workloads. `bash scripts/validate-app.sh` is only
-conditionally read-only. It probes through the Pod resolved by the
-`part-of=minishop` selector and checks `GET /items?q=`:
+they do not install or upgrade workloads. Since Issue #40 `bash
+scripts/validate-app.sh` no longer seeds. It first reads every backend Pod's
+image and stops, before sending any request, unless each one is a
+`ghcr.io/thanhdu-hcmus/minishop-backend` build other than the three published
+digests that still serve the destructive `POST /upload` (`e87390d3...`,
+`44a87d71...`, `599480a8...`). It also stops if no backend Pod reports an
+image. It then probes through the Pod resolved by the `part-of=minishop`
+selector:
 
-- Items present: it skips `POST /upload`, then checks the reviews route.
-- Empty list or PostgreSQL code `42P01`: it calls `POST /upload`, which drops
-  and recreates the table, then rechecks both routes.
-- Any other response: it fails without uploading.
+- `GET /items?q=` must return items. An empty list or 500 with `42P01` fails
+  with a hint to seed through the chart seed Job; no POST is sent.
+- `POST /upload` must answer non-2xx and leave the item list unchanged; then
+  the reviews route is checked.
+
+### Seeding an empty database
+
+#40 removes `POST /upload` from the backend (Express answers 404). Seeding is
+an opt-in chart Job, `seed.enabled` (default `false`), that runs `seed.js` from
+the backend image. It creates `marketitems` only if missing, inserts the 100
+items only into an empty table (one transaction under an advisory lock, with
+`ON CONFLICT DO NOTHING`), and writes Redis keys with `SET NX`. It never drops,
+truncates, or overwrites data, but it refills a deliberately emptied table if
+it runs. See [ADR 0013](./decisions/0013-seed-job-replaces-upload.md).
+
+Do not enable it while the chart pins `599480a8...`; that image has no
+`seed.js`. After a pin PR moves to a #40 image, and only for an empty database:
+back up first (`scripts/backup-data.sh`, from PR #54), set `seed.enabled: true`
+in a values file (`deploy-helm.sh` has no flag for it), deploy, then inspect
+the Job read-only:
+
+```bash
+KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+  get jobs,pods -l app.kubernetes.io/component=seed
+```
+
+The Job name includes a pod-template hash, so a new image creates a new Job.
+It retries up to `backoffLimit: 6` within `activeDeadlineSeconds: 900`; early
+`ECONNREFUSED` failures are expected while the data services start. It is
+deleted 24 h after finishing, and the next `helm upgrade` recreates it, which
+is harmless because it is idempotent. NetworkPolicy `minishop-seed` allows its
+egress only to PostgreSQL, Redis, and DNS.
 
 The frontend root check is distinct from database-backed item behavior, so
 inspect the response body as well as the status. The item route first returned
@@ -224,15 +257,15 @@ KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp   get deploymen
 
 On this image:
 
-- `/items`, the reviews route, and `POST /upload` return 503 when PostgreSQL or
+- `/items` and the reviews route return 503 when PostgreSQL or
   Redis is unreachable, refusing service, or timed out, and 500 for other
   failures, with JSON `{"error": "...", "code": "<SQLSTATE>"}` (`code` only for
   PostgreSQL errors). An unseeded table returns 500 with `42P01`, the only
-  unseeded form `validate-app.sh` accepts; the 200-with-`42P01` form of older
-  images now fails the validator without uploading. Reviews of an item with no
+  unseeded form. Reviews of an item with no
   reviews still return 200 with `{}`.
-- `POST /upload` returns 200 and loads 100 rows and 100 Redis keys; a repeat
-  upload stays at 100 rows. It is unauthenticated and drops the table first.
+- `POST /upload` is still served: it is unauthenticated and drops the table
+  first. The #40 backend removes it, but only after a pin PR deploys that
+  image; until then `validate-app.sh` refuses to run.
 - The liveness probe uses `GET /live` (process only) and the readiness probe
   uses `GET /ready` (PostgreSQL and Redis), in both the chart and the raw
   manifest. Probe timings are unchanged.
@@ -248,8 +281,8 @@ On this image:
   [Issue #47 record](./devlog/2026-11-08-health-image-pin.md).
 
 Known gaps: the `minishop-frontend` Service and Deployment selectors still
-overlap legacy frontend Pods, and `POST /upload` is unauthenticated and drops the
-table when called.
+overlap legacy frontend Pods, and the pinned image still serves the destructive
+`POST /upload` until the #40 image is pinned and deployed.
 
 ## Scoped cleanup
 
