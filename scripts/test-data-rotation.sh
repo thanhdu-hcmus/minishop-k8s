@@ -9,15 +9,21 @@
 # Usage:
 #   bash scripts/test-data-rotation.sh [--keep-cluster]
 #       Checks that the script refuses to run without --context, without a
-#       recent backup, and when the two Secrets disagree; that a dry run
-#       changes nothing; that a failure after ALTER ROLE rolls back; that a
-#       rotation succeeds (old passwords rejected, data intact, /items
-#       served); that a failed rollback leaves a work directory from which
-#       --recover restores the old passwords; that --only postgresql leaves
-#       Redis alone; and that no password appears in any output.
+#       recent backup, when the two Secrets disagree, when an old value is not
+#       plain base64, with a state directory that is not private, and while
+#       another run holds the lock; that a dry run changes nothing; that a
+#       failure after ALTER ROLE rolls back, and so does a concurrent Secret
+#       change (409 Conflict); that a rotation succeeds (old passwords
+#       rejected, data intact, /items served) and how long clients see
+#       failures; that a failed rollback leaves a work directory from which
+#       --recover converges on the old or on the new passwords, and refuses a
+#       conflicting --only; that --only postgresql and --only redis each leave
+#       the other password alone; and that no password appears in any output.
 #       --keep-cluster leaves the cluster for inspection.
 
 set -euo pipefail
+# Tracing would print commands that handle password files.
+set +x
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=data-lib.sh
@@ -46,8 +52,10 @@ readonly HELM_IMAGE=alpine/helm:3.17.3
 NODE_IMAGE=$(awk '$1 == "image:" { print $2; exit }' "$DATA_REPO_ROOT/cluster/kind-config.yaml")
 readonly NODE_IMAGE
 [[ "$NODE_IMAGE" == kindest/node:*@sha256:* ]] || die "no pinned node image in cluster/kind-config.yaml"
+BACKEND_IMAGE=$(data_chart_image backend) || die "no pinned backend image"
+readonly BACKEND_IMAGE
 
-data_require_commands docker kind kubectl base64 sha256sum
+data_require_commands docker kind kubectl base64 sha256sum flock
 umask 077
 unset KUBECONFIG
 scratch=$(mktemp -d)
@@ -72,6 +80,7 @@ trap cleanup EXIT
 
 k() { kubectl --kubeconfig "$kc" --context "$CONTEXT" "$@"; }
 pass() { printf 'PASS: %s\n' "$*"; }
+now_ms() { date +%s%3N; }
 
 # rotate LOG-NAME ARGS... runs the rotation script against the throwaway
 # cluster, with all its output in $logs/LOG-NAME.
@@ -102,11 +111,9 @@ expect_success() { # description log args...
   pass "$description"
 }
 
-# --- Checks the test makes itself (never printing a value) --------------------
+# --- Checks the test makes itself (values are streamed, never printed) --------
 secret_file() { # namespace secret key file
-  local b64
-  b64=$(k -n "$1" get secret "$2" -o "jsonpath={.data.$3}" 2>/dev/null)
-  base64 -d <<<"$b64" >"$4"
+  k -n "$1" get secret "$2" -o "jsonpath={.data.$3}" 2>/dev/null | base64 -d >"$4"
 }
 
 secret_sha() { # namespace secret key
@@ -114,6 +121,11 @@ secret_sha() { # namespace secret key
 }
 
 file_sha() { sha256sum <"$1" | cut -c1-64; }
+
+set_secret_key() { # namespace secret key file
+  { printf '{"data":{"%s":"' "$3"; base64 -w0 <"$4"; printf '"}}'; } |
+    k -n "$1" patch secret "$2" --type merge --patch-file /dev/stdin >/dev/null
+}
 
 # Both Secrets hold the content of the given files.
 secrets_hold() { # postgres-file redis-file
@@ -148,8 +160,8 @@ role_digest() { # md5 of the stored SCRAM verifier, over the trusted socket
 
 # Pods and Secret versions; a dry run must leave all of them unchanged.
 snapshot() {
-  k -n data get secret minishop-data-credentials -o 'jsonpath={.metadata.resourceVersion}{"\n"}'
-  k -n webapp get secret minishop-app-credentials -o 'jsonpath={.metadata.resourceVersion}{"\n"}'
+  k -n data get secret minishop-data-credentials -o 'jsonpath={.metadata.resourceVersion}{"\n"}' 2>/dev/null
+  k -n webapp get secret minishop-app-credentials -o 'jsonpath={.metadata.resourceVersion}{"\n"}' 2>/dev/null
   k -n data get pods -o 'jsonpath={range .items[*]}{.metadata.uid}{"\n"}{end}'
   k -n webapp get pods -o 'jsonpath={range .items[*]}{.metadata.uid}{"\n"}{end}'
   role_digest
@@ -160,7 +172,11 @@ backend_pods() {
     -o 'jsonpath={range .items[*]}{.metadata.uid}{"\n"}{end}' | sort
 }
 
-state_dirs() { find "$scratch/state" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true; }
+pod_uid() { k -n data get pod "$1" -o 'jsonpath={.metadata.uid}'; }
+
+state_dirs() {
+  find "$scratch/state" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true
+}
 
 # --- Refusals that need no cluster ------------------------------------------------
 if bash "$SCRIPT_DIR/rotate-data-credentials.sh" --apply >"$logs/no-context" 2>&1; then
@@ -191,15 +207,21 @@ k create namespace data >/dev/null
 k create namespace webapp >/dev/null
 k -n webapp create serviceaccount minishop-backend >/dev/null
 # Throwaway passwords in the shape create-*-credentials.sh users chose
-# (48 base64 characters), so the rotation is tested from that format.
+# (48 base64 characters), so the rotation is tested from that format. The
+# Secrets are created with `kubectl apply`, like create-*-credentials.sh, so
+# they carry the last-applied-configuration annotation.
 for key in postgres-password redis-password; do
   head -c 36 /dev/urandom | base64 -w0 >"$scratch/creds/$key"
 done
 for ns_secret in data/minishop-data-credentials webapp/minishop-app-credentials; do
   k -n "${ns_secret%/*}" create secret generic "${ns_secret#*/}" \
     --from-file=postgres-password="$scratch/creds/postgres-password" \
-    --from-file=redis-password="$scratch/creds/redis-password" >/dev/null
+    --from-file=redis-password="$scratch/creds/redis-password" \
+    --dry-run=client -o yaml 2>/dev/null | k apply -f - >/dev/null
 done
+k -n data get secret minishop-data-credentials \
+  -o 'jsonpath={.metadata.annotations}' 2>/dev/null | grep last-applied-configuration >/dev/null ||
+  die "the test Secrets lack the last-applied-configuration annotation"
 
 docker run --rm --volume "$DATA_REPO_ROOT/charts/minishop:/chart:ro" "$HELM_IMAGE" \
   template minishop /chart --namespace webapp \
@@ -215,6 +237,69 @@ k -n webapp rollout status deployment/minishop-backend --timeout=600s >/dev/null
 k -n webapp wait job -l app.kubernetes.io/component=seed --for=condition=complete --timeout=900s >/dev/null
 pass "throwaway MiniShop stack is up and seeded"
 
+# A client next to the frontend: with the frontend's labels the chart's
+# NetworkPolicies let it reach the backend Service. It requests /items
+# (PostgreSQL) and /items/0/reviews (Redis) every 250 ms and logs
+# "<epoch ms> <path> <status or ERR>".
+cat >"$scratch/prober.yaml" <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rotation-prober
+  namespace: webapp
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/part-of: minishop
+spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: prober
+      image: $BACKEND_IMAGE
+      command:
+        - node
+        - -e
+        - |
+          const http = require("http");
+          const get = path => new Promise(resolve => {
+            const request = http.get({ host: "minishop-backend", port: 3001, path, timeout: 2000 }, response => {
+              response.resume();
+              response.on("end", () => resolve(String(response.statusCode)));
+            });
+            request.on("timeout", () => request.destroy(new Error("timeout")));
+            request.on("error", () => resolve("ERR"));
+          });
+          (async () => {
+            for (;;) {
+              for (const path of ["/items?q=", "/items/0/reviews"]) {
+                console.log(Date.now() + " " + path + " " + await get(path));
+              }
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+          })();
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { cpu: 100m, memory: 64Mi }
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: { drop: [ALL] }
+        readOnlyRootFilesystem: true
+YAML
+k apply -f "$scratch/prober.yaml" >/dev/null
+k -n webapp wait pod rotation-prober --for=condition=Ready --timeout=180s >/dev/null
+
+# probe_summary START-MS END-MS: requests and failures per path in the range.
+probe_summary() {
+  k -n webapp logs rotation-prober | awk -v a="$1" -v b="$2" '
+    $1 >= a && $1 <= b { total[$2]++; if ($3 != "200") failed[$2]++ }
+    END { for (p in total) printf "%s %d/%d failed; ", p, failed[p] + 0, total[p] }'
+}
+
 bash "$SCRIPT_DIR/backup-data.sh" --kubeconfig "$kc" --context "$CONTEXT" \
   --backup-dir "$scratch/backups" >"$logs/backup" 2>&1 || { cat "$logs/backup" >&2; die "backup failed"; }
 redis_keys_before=$(DATA_KUBECONFIG=$kc DATA_CONTEXT=$CONTEXT data_redis_keyspace)
@@ -225,13 +310,20 @@ expect_failure "refuses without a recent backup" 'no backup set of this target' 
   --apply --backup-dir "$scratch/no-backups"
 cp "$scratch/creds/redis-password" "$scratch/creds/drift"
 printf 'x' >>"$scratch/creds/drift"
-{ printf '{"data":{"redis-password":"'; base64 -w0 <"$scratch/creds/drift"; printf '"}}'; } |
-  k -n webapp patch secret minishop-app-credentials --type merge --patch-file /dev/stdin >/dev/null
+set_secret_key webapp minishop-app-credentials redis-password "$scratch/creds/drift"
 expect_failure "refuses when the two Secrets disagree" 'differs between' drift --apply
-{ printf '{"data":{"redis-password":"'; base64 -w0 <"$scratch/creds/redis-password"; printf '"}}'; } |
-  k -n webapp patch secret minishop-app-credentials --type merge --patch-file /dev/stdin >/dev/null
+set_secret_key webapp minishop-app-credentials redis-password "$scratch/creds/redis-password"
+# An old value with a quote could not be pasted back into ALTER ROLE.
+printf "quote'in-the-old-password-123" >"$scratch/creds/quoted"
+set_secret_key data minishop-data-credentials postgres-password "$scratch/creds/quoted"
+expect_failure "refuses an old value outside [A-Za-z0-9+/=]" 'rotate manually' quoted --apply
+set_secret_key data minishop-data-credentials postgres-password "$scratch/creds/postgres-password"
 secrets_hold "$scratch/creds/postgres-password" "$scratch/creds/redis-password" ||
   die "could not undo the drift"
+mkdir -m 755 "$scratch/open-state"
+expect_failure "refuses an existing state directory that is not private" 'must be yours and mode 700' \
+  open-state --state-dir "$scratch/open-state"
+[[ "$(stat -c %a -- "$scratch/open-state")" == 755 ]] || die "the script chmodded an existing state directory"
 
 # --- Dry run ----------------------------------------------------------------------------------
 before=$(snapshot)
@@ -241,17 +333,33 @@ grep -q 'Dry run: nothing was changed' "$logs/dry-run" || die "the dry run did n
 [[ -z "$(state_dirs)" ]] || die "the dry run left a work directory"
 pass "dry run changes nothing (Secret versions, role password, Pods) and leaves no files"
 
-# --- Failure after ALTER ROLE: automatic rollback -----------------------------------------
-# A kubectl wrapper first on PATH fails the next N calls that match a pattern
-# and passes every other call to the real kubectl.
+# --- The lock --------------------------------------------------------------------------------
+exec {held}>>"$scratch/state/.lock"
+flock -n "$held"
+before=$(snapshot)
+expect_failure "refuses --apply while another run holds the lock" 'holds .*\.lock' locked --apply
+[[ "$(snapshot)" == "$before" ]] || die "the locked-out run changed something"
+exec {held}>&-
+
+# --- Failures after ALTER ROLE: automatic rollback ---------------------------------------
+# A kubectl wrapper first on PATH acts on the next N calls that match a
+# pattern: "fail" makes the call fail; "touch" first annotates the Secret the
+# call patches, like a concurrent writer, then runs the call. Every other
+# call goes to the real kubectl.
 cat >"$scratch/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
 if [[ -n "${FAIL_PATTERN:-}" && " $* " == *"$FAIL_PATTERN"* ]]; then
   left=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
   if [[ "$left" -gt 0 ]]; then
     echo $((left - 1)) >"$FAIL_COUNT_FILE"
-    echo "injected failure: $FAIL_PATTERN" >&2
-    exit 1
+    if [[ "${FAIL_MODE:-fail}" == touch ]]; then
+      # Arguments: --kubeconfig K --context C -n NS patch secret NAME ...
+      "$REAL_KUBECTL" "${@:1:6}" annotate secret "$9" --overwrite \
+        "rotation-test/concurrent-writer=$left" >/dev/null 2>&1
+    else
+      echo "injected failure: $FAIL_PATTERN" >&2
+      exit 1
+    fi
   fi
 fi
 exec "$REAL_KUBECTL" "$@"
@@ -266,29 +374,54 @@ with_failures() { # pattern count description error-pattern log args...
   PATH="$scratch/bin:$PATH" FAIL_PATTERN=$pattern expect_failure "$@"
 }
 
+# check_rolled_back LOG: the old passwords are back everywhere.
+check_rolled_back() {
+  grep -q 'ok: role minishop has the new password' "$logs/$1" || die "$1: the role was not changed before the failure"
+  secrets_hold "$scratch/creds/postgres-password" "$scratch/creds/redis-password" ||
+    die "$1: the Secrets do not hold the old passwords after the rollback"
+  pg_logs_in "$scratch/creds/postgres-password" || die "$1: the old PostgreSQL password does not log in"
+  redis_logs_in "$scratch/creds/redis-password" || die "$1: the old Redis password does not log in"
+  [[ "$(role_digest)" != "$role_before" ]] || die "$1: the role verifier did not change, so ALTER ROLE never ran"
+  [[ "$(backend_pods)" == "$backend_before" ]] || die "$1: the rollback restarted Pods that were never restarted"
+  [[ -z "$(state_dirs)" ]] || die "$1: a successful rollback left the work directory"
+}
+
 backend_before=$(backend_pods)
 role_before=$(role_digest)
 with_failures "patch secret minishop-app-credentials" 1 \
   "a failure after ALTER ROLE and the first Secret patch rolls back" 'Rolled back' rollback --apply
-grep -q 'ok: role minishop has the new password' "$logs/rollback" || die "the role was not changed before the failure"
 # Redaction hides passwords but keeps the names an operator needs.
 grep -qF 'failed: injected failure: patch secret minishop-app-credentials' "$logs/rollback" ||
   die "the error output does not name the failed Secret"
-secrets_hold "$scratch/creds/postgres-password" "$scratch/creds/redis-password" ||
-  die "the Secrets do not hold the old passwords after the rollback"
-pg_logs_in "$scratch/creds/postgres-password" || die "the old PostgreSQL password does not log in after the rollback"
-redis_logs_in "$scratch/creds/redis-password" || die "the old Redis password does not log in after the rollback"
-[[ "$(role_digest)" != "$role_before" ]] || die "the role verifier did not change, so ALTER ROLE never ran"
-[[ "$(backend_pods)" == "$backend_before" ]] || die "the rollback restarted Pods that were never restarted"
-[[ -z "$(state_dirs)" ]] || die "a successful rollback left the work directory"
+check_rolled_back rollback
 pass "after the rollback the old passwords work, both Secrets hold them, and no work files remain"
 
-# --- Happy path ------------------------------------------------------------------------------
+role_before=$(role_digest)
+FAIL_MODE="touch" with_failures "patch secret minishop-app-credentials" 1 \
+  "a concurrent change to a Secret fails the patch with 409 and rolls back" 'has been modified' conflict --apply
+grep -q 'Rolled back' "$logs/conflict" || die "the 409 did not trigger the rollback"
+check_rolled_back conflict
+pass "after the 409 rollback the old passwords work everywhere"
+
+# --- Happy path, with a client probing throughout ---------------------------------------
+started_ms=$(now_ms)
 expect_success "rotation of both passwords succeeds" rotate --apply
+ended_ms=$(now_ms)
 for line in 'ok: postgresql: the new password logs in, the previous one is rejected' \
   'ok: redis: the new password logs in, the previous one is rejected' \
-  'Redis keys without a TTL are unchanged' '/items 200' 'Rotation complete'; do
+  'Redis keys without a TTL are unchanged' '/items 200' 'client window:' 'Rotation complete'; do
   grep -qF "$line" "$logs/rotate" || { cat "$logs/rotate" >&2; die "missing from the output: $line"; }
+done
+window=$(sed -n 's/.*ok: client window: \([0-9.]*\) s.*/\1/p' "$logs/rotate")
+sleep 2
+probes=$(probe_summary "$started_ms" "$ended_ms")
+printf 'MEASURED: client window %s s (ALTER ROLE until the backend rollout finished); prober during the whole run: %s\n' \
+  "$window" "$probes"
+for ns_secret in data/minishop-data-credentials webapp/minishop-app-credentials; do
+  if k -n "${ns_secret%/*}" get secret "${ns_secret#*/}" -o 'jsonpath={.metadata.annotations}' 2>/dev/null |
+    grep last-applied-configuration >/dev/null; then
+    die "$ns_secret still has the last-applied-configuration annotation"
+  fi
 done
 secret_file data minishop-data-credentials postgres-password "$scratch/creds/pg-1"
 secret_file data minishop-data-credentials redis-password "$scratch/creds/redis-1"
@@ -306,42 +439,74 @@ redis_logs_in "$scratch/creds/redis-1" || die "the new Redis password does not l
 [[ "$(DATA_KUBECONFIG=$kc DATA_CONTEXT=$CONTEXT data_redis_keyspace)" == "$redis_keys_before" ]] ||
   die "Redis lost keys in the rotation"
 [[ -z "$(state_dirs)" ]] || die "the rotation left its work directory"
-pass "both Secrets agree, old passwords are rejected, Redis keys kept, backend replaced, no work files"
+pass "both Secrets agree, old passwords are rejected, Redis keys kept, backend replaced, annotation gone, no work files"
 
-# --- Rollback that fails, then --recover ---------------------------------------------------
+# --- Rollbacks that fail, then --recover ----------------------------------------------------
 # Every backend restart fails: the forward run fails after Redis restarted,
 # and the rollback cannot restart the backend either.
-with_failures "rollout restart deployment/minishop-backend" 2 \
-  "a failed rollback reports the state and keeps the work directory" 'ROLLBACK INCOMPLETE' broken --apply
-grep -q -- '--recover' "$logs/broken" || die "no recovery command printed"
-mapfile -t kept < <(state_dirs)
-[[ ${#kept[@]} -eq 1 ]] || die "expected one kept work directory, found ${#kept[@]}"
-[[ "$(stat -c %a -- "${kept[0]}")" == 700 && -z "$(find "${kept[0]}" -type f ! -perm 600)" ]] ||
-  die "the kept work directory is not private"
-grep -q 'old password' "$logs/broken" || die "the state report is missing"
-expect_success "--recover --to old converges on the old passwords" recover \
+break_rotation() { # log
+  with_failures "rollout restart deployment/minishop-backend" 2 \
+    "a failed rollback reports the state and keeps the work directory ($1)" 'ROLLBACK INCOMPLETE' "$1" --apply
+  grep -q -- '--recover' "$logs/$1" || die "$1: no recovery command printed"
+  grep -q -- '--timeout 300' "$logs/$1" || die "$1: the recovery command drops --timeout"
+  grep -q 'old password' "$logs/$1" || die "$1: the state report is missing"
+  mapfile -t kept < <(state_dirs)
+  [[ ${#kept[@]} -eq 1 ]] || die "$1: expected one kept work directory, found ${#kept[@]}"
+  [[ "$(stat -c %a -- "${kept[0]}")" == 700 && -z "$(find "${kept[0]}" -type f ! -perm 600)" ]] ||
+    die "$1: the kept work directory is not private"
+}
+
+break_rotation broken-old
+expect_failure "--recover refuses an --only that differs from the work directory" 'conflicts with' \
+  recover-conflict --apply --recover "${kept[0]}" --to old --only redis
+expect_success "--recover --to old converges on the old passwords" recover-old \
   --apply --recover "${kept[0]}" --to old
-grep -q 'Recovery complete' "$logs/recover" || die "recovery did not report completion"
+grep -q 'Recovery complete' "$logs/recover-old" || die "recovery did not report completion"
 secrets_hold "$scratch/creds/pg-1" "$scratch/creds/redis-1" || die "the Secrets are not back on the old passwords"
 pg_logs_in "$scratch/creds/pg-1" || die "the PostgreSQL password from before the failed run does not log in"
 redis_logs_in "$scratch/creds/redis-1" || die "the Redis password from before the failed run does not log in"
 [[ ! -e "${kept[0]}" ]] || die "--recover did not remove the work directory"
-pass "after --recover the old passwords work everywhere and the work directory is gone"
+pass "after --recover --to old the old passwords work everywhere and the work directory is gone"
 
-# --- --only postgresql leaves Redis alone ------------------------------------------------
-redis_uid=$(k -n data get pod minishop-redis-0 -o 'jsonpath={.metadata.uid}')
+break_rotation broken-new
+cp "${kept[0]}/new/postgres-password" "$scratch/creds/pg-new"
+cp "${kept[0]}/new/redis-password" "$scratch/creds/redis-new"
+expect_success "--recover --to new finishes the rotation" recover-new \
+  --apply --recover "${kept[0]}" --to new
+secrets_hold "$scratch/creds/pg-new" "$scratch/creds/redis-new" || die "the Secrets do not hold the new passwords"
+pg_logs_in "$scratch/creds/pg-new" || die "the new PostgreSQL password does not log in after --recover --to new"
+! pg_logs_in "$scratch/creds/pg-1" || die "the previous PostgreSQL password still logs in"
+redis_logs_in "$scratch/creds/redis-new" || die "the new Redis password does not log in after --recover --to new"
+! redis_logs_in "$scratch/creds/redis-1" || die "the previous Redis password still logs in"
+grep -q '/items 200' "$logs/recover-new" || die "--recover --to new did not check the backend"
+[[ ! -e "${kept[0]}" ]] || die "--recover did not remove the work directory"
+pass "after --recover --to new the new passwords work everywhere and the old ones are rejected"
+
+# --- --only leaves the other password alone ------------------------------------------------
+redis_uid=$(pod_uid minishop-redis-0)
 expect_success "--only postgresql rotates PostgreSQL alone" only-pg --apply --only postgresql
 secret_file data minishop-data-credentials postgres-password "$scratch/creds/pg-2"
-secrets_hold "$scratch/creds/pg-2" "$scratch/creds/redis-1" || die "--only postgresql changed the Redis password"
-! cmp -s "$scratch/creds/pg-2" "$scratch/creds/pg-1" || die "--only postgresql did not change the PostgreSQL password"
-[[ "$(k -n data get pod minishop-redis-0 -o 'jsonpath={.metadata.uid}')" == "$redis_uid" ]] ||
-  die "--only postgresql restarted Redis"
+secrets_hold "$scratch/creds/pg-2" "$scratch/creds/redis-new" || die "--only postgresql changed the Redis password"
+! cmp -s "$scratch/creds/pg-2" "$scratch/creds/pg-new" || die "--only postgresql did not change the PostgreSQL password"
+[[ "$(pod_uid minishop-redis-0)" == "$redis_uid" ]] || die "--only postgresql restarted Redis"
 pass "--only postgresql kept the Redis password and Pod"
+
+role_before=$(role_digest)
+expect_success "--only redis rotates Redis alone" only-redis --apply --only redis
+secret_file data minishop-data-credentials redis-password "$scratch/creds/redis-2"
+secrets_hold "$scratch/creds/pg-2" "$scratch/creds/redis-2" || die "--only redis changed the PostgreSQL password"
+! cmp -s "$scratch/creds/redis-2" "$scratch/creds/redis-new" || die "--only redis did not change the Redis password"
+[[ "$(role_digest)" == "$role_before" ]] || die "--only redis ran ALTER ROLE"
+[[ "$(pod_uid minishop-redis-0)" != "$redis_uid" ]] || die "--only redis did not restart Redis"
+redis_logs_in "$scratch/creds/redis-2" || die "the new Redis password does not log in"
+! redis_logs_in "$scratch/creds/redis-new" || die "the previous Redis password still logs in"
+grep -q 'client window: .* from the statefulset/minishop-redis restart' "$logs/only-redis" ||
+  die "--only redis measured the window from the wrong step"
+pass "--only redis kept the PostgreSQL password and role, and restarted Redis"
 
 # --- No password in any output ---------------------------------------------------------------
 patterns="$scratch/patterns"
-for file in "$scratch/creds/postgres-password" "$scratch/creds/redis-password" \
-  "$scratch/creds/pg-1" "$scratch/creds/redis-1" "$scratch/creds/pg-2"; do
+for file in "$scratch/creds"/*; do
   cat "$file"; echo
   base64 -w0 <"$file"; echo
 done >"$patterns"
