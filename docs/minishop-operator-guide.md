@@ -218,7 +218,7 @@ the backend image. It creates `marketitems` only if missing, inserts the 100
 items only into an empty table (one transaction under an advisory lock, with
 `ON CONFLICT DO NOTHING`), and writes Redis keys with `SET NX`. It never drops,
 truncates, or overwrites data, but it refills a deliberately emptied table if
-it runs. See [ADR 0013](./decisions/0013-seed-job-replaces-upload.md).
+it runs. See [ADR 0014](./decisions/0014-seed-job-replaces-upload.md).
 
 Do not enable it while the chart pins `599480a8...`; that image has no
 `seed.js`. After a pin PR moves to a #40 image, and only for an empty database:
