@@ -197,18 +197,32 @@ bash scripts/validate-helm.sh
 
 The two validators render the dev/prod configurations and run schema checks;
 they do not install or upgrade workloads. Since Issue #40 `bash
-scripts/validate-app.sh` no longer seeds. It first reads every backend Pod's
-image and stops, before sending any request, unless each one is a
-`ghcr.io/thanhdu-hcmus/minishop-backend` build other than the three published
-digests that still serve the destructive `POST /upload` (`e87390d3...`,
-`44a87d71...`, `599480a8...`). It also stops if no backend Pod reports an
-image. It then probes through the Pod resolved by the `part-of=minishop`
-selector:
+scripts/validate-app.sh` no longer seeds. Before any request it checks every
+backend container:
+
+- Both its requested image (Pod spec) and its running image ID must be an
+  anchored `ghcr.io/thanhdu-hcmus/minishop-backend@sha256:<64 hex>` reference;
+  otherwise, or if no backend Pod reports a container, it exits 1. The spec is
+  checked too because the runtime reports the image ID by content, so a Pod
+  that requests the same bytes under another name still shows the ghcr.io name.
+- It runs `test -f /usr/src/app/seed.js` in the container (`kubectl exec`).
+  Only #40 and later images ship that file. If any container lacks it, or runs
+  one of the four pre-#40 published digests (`e87390d3...`, `44a87d71...`,
+  `599480a8...`, `f10f726b...`), the script prints a WARNING and skips only the
+  `POST /upload` probe, because those images would drop and reseed the table.
+  If the exec itself fails, it exits 1.
+
+It then probes through the Pod resolved by the `part-of=minishop` selector:
 
 - `GET /items?q=` must return items. An empty list or 500 with `42P01` fails
   with a hint to seed through the chart seed Job; no POST is sent.
-- `POST /upload` must answer non-2xx and leave the item list unchanged; then
-  the reviews route is checked.
+- Unless skipped, `POST /upload` must answer 404 and leave the item list
+  unchanged.
+- The reviews route must return reviews.
+
+While the chart still pins a pre-#40 image (until the #40 pin PR is
+deployed), expect the WARNING and `POST /upload probe skipped`; the script
+still exits 0 when the read checks pass.
 
 ### Seeding an empty database
 
@@ -217,19 +231,42 @@ an opt-in chart Job, `seed.enabled` (default `false`), that runs `seed.js` from
 the backend image. It creates `marketitems` only if missing, inserts the 100
 items only into an empty table (one transaction under an advisory lock, with
 `ON CONFLICT DO NOTHING`), and writes Redis keys with `SET NX`. It never drops,
-truncates, or overwrites data, but it refills a deliberately emptied table if
-it runs. See [ADR 0014](./decisions/0014-seed-job-replaces-upload.md).
+truncates, or overwrites data. It does refill a deliberately emptied table, and
+a rerun recreates any deliberately deleted Redis review key, because `SET NX`
+writes every absent key. See
+[ADR 0014](./decisions/0014-seed-job-replaces-upload.md).
 
 Do not enable it while the chart pins `599480a8...`; that image has no
-`seed.js`. After a pin PR moves to a #40 image, and only for an empty database:
-back up first (`scripts/backup-data.sh`, from PR #54), set `seed.enabled: true`
-in a values file (`deploy-helm.sh` has no flag for it), deploy, then inspect
-the Job read-only:
+`seed.js`. After the pin PR that moves to a #40 image is deployed, and only for
+an empty database, seed it as follows (`deploy-helm.sh` has no flag for it):
 
-```bash
-KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
-  get jobs,pods -l app.kubernetes.io/component=seed
-```
+1. Edit `charts/minishop/values-dev.yaml` locally to add:
+
+   ```yaml
+   seed:
+     enabled: true
+   ```
+
+   Helm merges this over `values.yaml`, so `seed.resources` keeps its
+   defaults. Never commit this edit.
+2. Back up first: `bash scripts/backup-data.sh` (from PR #54).
+3. Deploy: `PATH="$PWD/.tools/bin:$PATH" bash scripts/deploy-helm.sh
+   values-dev.yaml`.
+4. Wait until the Job is Complete (this only reads the cluster):
+
+   ```bash
+   KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+     wait --for=condition=complete job -l app.kubernetes.io/component=seed \
+     --timeout=900s
+   KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+     get jobs,pods -l app.kubernetes.io/component=seed
+   ```
+
+5. Revert the edit (`git checkout -- charts/minishop/values-dev.yaml` in WSL)
+   and deploy again with the same command. Helm then deletes the seed Job and
+   NetworkPolicy `minishop-seed`.
+6. Run `bash scripts/validate-app.sh`. Confirm `git status` shows no change to
+   `values-dev.yaml`.
 
 The Job name includes a pod-template hash, so a new image creates a new Job.
 It retries up to `backoffLimit: 6` within `activeDeadlineSeconds: 900`; early
