@@ -5,3 +5,15 @@
 .kube/
 .playwright-cli/
 .tools/
+
+# Data backups hold real data. scripts/backup-data.sh writes them outside the
+# repository (default ~/minishop-backups) and refuses a path inside it. As a
+# second line of defence, ignore any backup root, partial set or <UTC stamp>
+# set directory at any depth, with everything in it (dumps, snapshots,
+# manifest.txt, SHA256SUMS, redis-cli.log), and dumps and snapshots anywhere.
+backups/
+minishop-backups/
+.partial-*/
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z/
+*.dump
+*.rdb
