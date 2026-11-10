@@ -247,9 +247,85 @@ On this image:
   [ADR 0010](./decisions/0010-backend-dependency-health.md) and the
   [Issue #47 record](./devlog/2026-11-08-health-image-pin.md).
 
-Known gaps: the `minishop-frontend` Service and Deployment selectors still
-overlap legacy frontend Pods, and `POST /upload` is unauthenticated and drops the
-table when called.
+Known gap: `POST /upload` is unauthenticated and drops the table when called.
+The legacy frontend that overlapped the `minishop-frontend` selectors was
+retired by the Issue #38 runbook.
+
+## Monitoring
+
+The `monitoring` Helm release (`kube-prometheus-stack-69.8.2`) runs Prometheus,
+Grafana, Alertmanager, kube-state-metrics, and node-exporter. Prometheus scrapes
+every `minishop-backend` Pod at `/metrics` through the `minishop-backend`
+ServiceMonitor. None of these UIs has an Ingress, so reach them with a
+port-forward. Run each command in its own WSL terminal from the repository root
+and keep it running:
+
+```bash
+export KUBECONFIG=./.kube/config
+kubectl --context kind-learn -n monitoring port-forward svc/monitoring-grafana 3000:80
+kubectl --context kind-learn -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
+kubectl --context kind-learn -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9093:9093
+```
+
+Then open Grafana at <http://127.0.0.1:3000>, Prometheus at
+<http://127.0.0.1:9090>, and Alertmanager at <http://127.0.0.1:9093> from a
+Windows browser.
+
+Grafana's user is `admin`. Its password is in Secret
+`monitoring/monitoring-grafana`. Read it only in your own terminal, and never
+paste it into docs, Issues, or logs:
+
+```bash
+kubectl --context kind-learn -n monitoring get secret monitoring-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+Where to look:
+
+- **Grafana → Dashboards → MiniShop Backend**: the MiniShop dashboard. It
+  currently has one panel, backend CPU.
+- **Kubernetes / Compute Resources / Namespace (Pods)**: CPU and memory per Pod.
+  Choose `webapp` or `data`.
+- **Node Exporter / Nodes**: load, memory, and disk for each kind node.
+- **Prometheus → Graph**: the backend exports `http_request_duration_seconds`
+  with `method` and `status_code` labels.
+
+```promql
+# Requests per second
+sum(rate(http_request_duration_seconds_count{namespace="webapp"}[5m]))
+# Requests per second by status code
+sum by (status_code) (rate(http_request_duration_seconds_count{namespace="webapp"}[5m]))
+# 95th percentile latency
+histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="webapp"}[5m])))
+# Backend container restarts
+kube_pod_container_status_restarts_total{namespace="webapp"}
+```
+
+The kubelet's `/ready` probe requests are counted as well. A `503` series
+usually means a dependency was down, for example during a Docker restart.
+
+**Alerts.** The MiniShop rules are `MiniShopBackendRestarting` and
+`MiniShopBackendRestart`, in the `minishop-backend` and
+`minishop-backend-restarts` PrometheusRules. These alerts are expected on this
+cluster and are not MiniShop faults:
+
+- `Watchdog` and `InfoInhibitor` always fire by design. They prove that the
+  alert pipeline works.
+- `KubeProxyDown` and `TargetDown` (kube-system) are kind false positives.
+  kind binds kube-proxy's metrics endpoint to `127.0.0.1`, so Prometheus cannot
+  scrape it. kube-proxy itself works.
+- `CPUThrottlingHigh` in `monitoring` means some monitoring Pods reach their CPU
+  limits. It is worth reviewing, but it is not an outage.
+
+Known monitoring gaps:
+
+- The MiniShop dashboard lacks request rate, error rate, latency, and readiness
+  panels.
+- The `monitoring/backend` ServiceMonitor still selects the legacy backend
+  retired in Issue #38, so it matches nothing.
+- The kind false positives above are not silenced.
+- Alertmanager receivers have not been checked. Alerts may be visible only in
+  its UI.
 
 ## Back up and restore data
 
