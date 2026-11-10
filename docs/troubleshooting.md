@@ -86,11 +86,33 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   during Issue #36; the exact steps are not recorded.
 - **Symptom:** `GET /items?q=` returns HTTP 500 with code `42P01`, and the
   reviews route returns an empty object. **Cause:** the `marketitems` table and
-  Redis keys were never seeded. **Fix:** run `bash scripts/validate-app.sh`,
-  which calls `POST /upload` for this form only, or call `POST /upload` directly;
-  it loads 100 rows and 100 keys. Images older than #39 answered 200 with
-  `42P01`; the validator now fails on that form without uploading, which means
-  an old image is still deployed.
+  Redis keys were never seeded. **Fix:** since #40 neither the validator nor
+  the backend seeds; `validate-app.sh` fails on this form with a hint to use
+  the seed Job and sends no POST. Back up first, then deploy with
+  `seed.enabled: true` in a values file, using a backend pin that contains
+  `seed.js`; it loads 100 rows and 100 keys. Images older than #39 answered
+  200 with `42P01`, which means an old image is still deployed.
+- **Symptom:** `validate-app.sh` stops with `Backend Pod image ... still serves
+  the destructive POST /upload; deploy the #40 image first.`, `... is not a
+  MiniShop backend build ...`, or `No backend Pod reports an image ...`.
+  **Cause:** a guard added in #40. The validator sends `POST /upload` to prove
+  the route is gone, and an older image would drop and reseed the table, so it
+  refuses when any backend Pod (including one mid-rollout) runs `e87390d3...`,
+  `44a87d71...`, or `599480a8...`, a non-ghcr image, or when there are no
+  Pods. **Fix:** deploy the pin PR that moves to the #40 backend digest and
+  wait for the rollout to finish. Do not bypass the guard.
+- **Symptom:** the first one to three seed Job Pods (`-l
+  app.kubernetes.io/component=seed`) fail with `ECONNREFUSED` from PostgreSQL
+  or Redis on a fresh install. **Cause:** the Job starts with the release,
+  before the data services accept connections. On a throwaway cluster in #40,
+  attempts 1-2 failed on PostgreSQL and attempt 3 inserted the rows, then
+  failed on Redis; the next attempt skipped PostgreSQL and wrote the keys.
+  **Fix:** none needed; it retries up to `backoffLimit: 6` within 900 s
+  (raised from 5 after a fresh install used 4 attempts). If it exhausts them,
+  check the data services and that NetworkPolicy `minishop-seed` exists;
+  without it the Job timed out under default-deny. `kubectl logs job/...` picks
+  an arbitrary Pod, so read the logs of a specific Pod. Do not enable the seed
+  while the chart pins an image older than #40; those images have no `seed.js`.
 - **Symptom (historical, images before `sha256:44a87d71...d7af`):**
   `POST /upload` crashed the backend container with a `TypeError` such as
   `"arguments[1]" must be of type "string | Buffer"`. **Cause:** node-redis
@@ -103,7 +125,8 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   **Fix:** fixed in #39; the handler now logs `idle postgresql client error; the
   pool discarded it` and Redis waits are bounded to about 2 s. Deploy the current
   pin.
-- **Symptom:** `/items`, the reviews route, or `POST /upload` returns 503 or 500
+- **Symptom:** `/items` or the reviews route (or, on images before #40,
+  `POST /upload`) returns 503 or 500
   with a JSON body such as `{"error":"Items query failed","code":"57P01"}`, or
   backend Pods turn unready. **Cause:** 503 means PostgreSQL or Redis is
   unreachable, refusing service (for example a wrong password), or timed out; 500
