@@ -84,7 +84,7 @@ spec:
       containers:
         - name: load
           # yamllint disable rule:line-length
-          image: ghcr.io/thanhdu-hcmus/minishop-backend@sha256:599480a80f5fa26755cf368c0b13fdc9406580421477e8970981c39fc2f35114
+          image: ghcr.io/thanhdu-hcmus/minishop-backend@sha256:b0c282b0eac6269fc7da0a4155fe1fd89f2e8073bf2da922e0460ed94a1937ac
           # yamllint enable rule:line-length
           imagePullPolicy: IfNotPresent
           command:

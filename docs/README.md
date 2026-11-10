@@ -43,3 +43,4 @@ scoped cleanup.
 37. [Data backup and restore record](./devlog/2026-11-09-data-backup-restore.md) — Issue #40 part 1 `backup-data.sh`, `restore-data.sh`, and `test-data-restore.sh`, with the 2026-11-09 drill from kind-learn into Docker and a throwaway kind cluster.
 38. [Seed Job decision](./decisions/0014-seed-job-replaces-upload.md) — proposed T2 decision to remove `POST /upload` and seed through an opt-in, idempotent chart Job rather than a Helm hook.
 39. [Seed Job record](./devlog/2026-11-10-seed-job.md) — Issue #40 part 2 seed command, `/upload` removal, seed Job, `validate-app.sh` guard, and throwaway-cluster verification.
+40. [Seed image pin record](./devlog/2026-11-10-seed-image-pin.md) — Issue #40 follow-up pinning the #55 backend image `b0c282b0...`, which serves no `/upload` and ships `seed.js`.

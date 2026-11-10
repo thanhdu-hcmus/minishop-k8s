@@ -220,9 +220,10 @@ It then probes through the Pod resolved by the `part-of=minishop` selector:
   unchanged.
 - The reviews route must return reviews.
 
-While the chart still pins a pre-#40 image (until the #40 pin PR is
-deployed), expect the WARNING and `POST /upload probe skipped`; the script
-still exits 0 when the read checks pass.
+The chart pins a #40 image (`b0c282b0...`). Until a cluster is redeployed from
+`main` it may still run a pre-#40 image; there, or mid-rollout, expect the
+WARNING and `POST /upload probe skipped`. The script still exits 0 when the
+read checks pass.
 
 ### Seeding an empty database
 
@@ -236,9 +237,9 @@ a rerun recreates any deliberately deleted Redis review key, because `SET NX`
 writes every absent key. See
 [ADR 0014](./decisions/0014-seed-job-replaces-upload.md).
 
-Do not enable it while the chart pins `599480a8...`; that image has no
-`seed.js`. After the pin PR that moves to a #40 image is deployed, and only for
-an empty database, seed it as follows (`deploy-helm.sh` has no flag for it):
+Enable it only after the cluster runs the #40 image (`b0c282b0...`, pinned by
+the #40 pin PR); older images have no `seed.js`. Check the running digest with
+the read-only command below. Only for an empty database, seed it as follows (`deploy-helm.sh` has no flag for it):
 
 1. Edit `charts/minishop/values-dev.yaml` locally to add:
 
@@ -283,8 +284,9 @@ aligned the role password; it was seeded during Issue #36. See
 [Issue #36 record](./devlog/2026-11-02-minishop-item-seeding.md).
 
 The backend image is pinned to
-`sha256:599480a80f5fa26755cf368c0b13fdc9406580421477e8970981c39fc2f35114`
-(tag `sha-3925f188dc5103386881ae7c7a64ac300d8d8f68`, built from #46). A pin
+`sha256:b0c282b0eac6269fc7da0a4155fe1fd89f2e8073bf2da922e0460ed94a1937ac`
+(tag `sha-8ed5cfe4f7f0878b133fc9951907fe0d27d30343`, built from #55, Issue
+#40). The previous pin was `599480a8...` from #46. A pin
 applies only after the cluster is deployed from `main` (`helm upgrade`). This
 read-only command shows which digest the Deployment requests:
 
@@ -300,9 +302,9 @@ On this image:
   PostgreSQL errors). An unseeded table returns 500 with `42P01`, the only
   unseeded form. Reviews of an item with no
   reviews still return 200 with `{}`.
-- `POST /upload` is still served: it is unauthenticated and drops the table
-  first. The #40 backend removes it, but only after a pin PR deploys that
-  image; until then `validate-app.sh` warns and skips its `/upload` probe.
+- `POST /upload` is removed and answers 404. The image ships `seed.js` for the
+  opt-in seed Job. Pre-#40 images still serve the destructive route, so
+  `validate-app.sh` warns and skips its `/upload` probe on them.
 - The liveness probe uses `GET /live` (process only) and the readiness probe
   uses `GET /ready` (PostgreSQL and Redis), in both the chart and the raw
   manifest. Probe timings are unchanged.
@@ -317,8 +319,8 @@ On this image:
   [ADR 0010](./decisions/0010-backend-dependency-health.md) and the
   [Issue #47 record](./devlog/2026-11-08-health-image-pin.md).
 
-Known gap: the pinned image still serves the unauthenticated, destructive
-`POST /upload` until the #40 image is pinned and deployed.
+Known gap: until a cluster is redeployed with this pin, its running image
+still serves the unauthenticated, destructive `POST /upload`.
 The legacy frontend that overlapped the `minishop-frontend` selectors was
 retired by the Issue #38 runbook.
 

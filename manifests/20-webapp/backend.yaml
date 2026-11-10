@@ -2,9 +2,9 @@
 # ghcr.io/thanhdu-hcmus/minishop-backend
 # Source provenance: images/backend/UPSTREAM.md,
 # first built by Issue #21; this digest is the image tag
-# sha-3925f188dc5103386881ae7c7a64ac300d8d8f68, published from #46
+# sha-8ed5cfe4f7f0878b133fc9951907fe0d27d30343, published from #55
 # Resolved image digest:
-# sha256:599480a80f5fa26755cf368c0b13fdc9406580421477e8970981c39fc2f35114
+# sha256:b0c282b0eac6269fc7da0a4155fe1fd89f2e8073bf2da922e0460ed94a1937ac
 apiVersion: v1
 kind: Service
 metadata:
@@ -61,7 +61,7 @@ spec:
       containers:
         - name: backend
           # yamllint disable rule:line-length
-          image: ghcr.io/thanhdu-hcmus/minishop-backend@sha256:599480a80f5fa26755cf368c0b13fdc9406580421477e8970981c39fc2f35114
+          image: ghcr.io/thanhdu-hcmus/minishop-backend@sha256:b0c282b0eac6269fc7da0a4155fe1fd89f2e8073bf2da922e0460ed94a1937ac
           # yamllint enable rule:line-length
           imagePullPolicy: IfNotPresent
           ports:
