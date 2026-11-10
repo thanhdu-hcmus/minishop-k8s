@@ -315,6 +315,12 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   with `kubectl describe secret`, which shows key names and sizes only.
   Treat any value that was printed as exposed and rotate it
   (`scripts/rotate-data-credentials.sh` for the MiniShop data passwords).
+  Note that `create-{data,app}-credentials.sh` use `kubectl apply`, which also
+  keeps a copy of the values in the
+  `kubectl.kubernetes.io/last-applied-configuration` annotation; reading the
+  annotations exposes them just as reading `.data` does. The rotation's
+  Secret patches remove that annotation, so the replaced (exposed) values are
+  not kept there.
 - **Symptom:** `scripts/rotate-data-credentials.sh` prints `!!! ROLLBACK
   INCOMPLETE.`, the state of each component, and two `--recover DIR --to old`
   and `--to new` commands. **Cause:** a rotation step failed and the automatic
@@ -330,10 +336,25 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   is N hours old`; `<key> differs between <data secret> and <app secret>`;
   `the current <component> password in the Secrets does not log in`; `the
   backend is not healthy before the rotation`; `running Jobs read the Secrets
-  and would keep the old password`. **Cause:** pre-flight guards. **Fix:**
+  and would keep the old password`; `the current <key> is not 16 or more
+  characters of [A-Za-z0-9+/=] ...; rotate manually`; `another rotation or
+  recovery holds <state-dir>/.lock`; `<state-dir> must be yours and mode 700`;
+  `--only <x> conflicts with <dir>`. **Cause:** pre-flight guards. **Fix:**
   pass `--context`; run `bash scripts/backup-data.sh --context <ctx>` (or pass
   `--skip-backup-check` deliberately); make the two Secrets consistent; fix the
-  password or the backend first; wait for the listed Jobs to finish.
+  password or the backend first; wait for the listed Jobs to finish. An old
+  value with other characters cannot be pasted back into `ALTER ROLE` safely on
+  rollback: set a base64 password by hand (`ALTER ROLE` plus both Secrets),
+  then use the script. Wait for the other run, or `chmod 700` a state
+  directory you own. With `--recover`, drop `--only`: the work directory
+  records which passwords it holds.
+- **Symptom:** `scripts/rotate-data-credentials.sh` fails at a Secret patch
+  with `has been modified` (409 Conflict) and then `Rolled back`. **Cause:**
+  something changed that Secret between the pre-flight checks and the patch;
+  each patch carries the `resourceVersion` it checked, so the API server
+  refused to overwrite the newer object. **Fix:** find the other writer (a
+  second operator, `create-*-credentials.sh`, a deploy script), let it
+  finish, and run the rotation again.
 - **Symptom:** after a successful rotation the backend or Redis fails
   authentication again later. **Cause:** `scripts/create-data-credentials.sh`
   or `scripts/create-app-credentials.sh` was re-run with the old passwords,

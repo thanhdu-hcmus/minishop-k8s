@@ -517,8 +517,16 @@ bash scripts/validate-app.sh                                   # 4. check the ap
   statement logging off for that session), the data Secret, the app Secret, a
   rolling restart of the Redis StatefulSet, a rolling restart of the backend,
   then verification. The PostgreSQL StatefulSet is not restarted.
-- Expect a few seconds of authentication failures between `ALTER ROLE` and the
-  backend restart. This is an owner decision; there are no dual roles.
+- Expect failed requests from `ALTER ROLE` until the backend rollout
+  completes, measured at ~39 s in the self-test (2 backend replicas; kind-learn
+  runs at least 3, so expect longer). Old backend Pods cannot open new
+  connections and go NotReady once Redis restarts; requests on pooled
+  PostgreSQL connections keep working. The script prints the measured window
+  as `client window:`. This is an owner decision; there are no dual roles.
+- `--apply` holds a lock on `<state-dir>/.lock` (default
+  `~/.local/state/minishop-rotation`), so only one rotation or recovery runs
+  at a time. A Secret changed by someone else after the checks makes the
+  patch fail with 409 Conflict, and the script rolls back.
 - Verification: the new passwords log in, the old ones are rejected, the Redis
   keys without a TTL are unchanged, and every new backend Pod answers 200 on
   `/ready`, `/items` and `/items/<i>/reviews`.
