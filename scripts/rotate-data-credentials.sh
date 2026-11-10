@@ -9,7 +9,11 @@
 #      trusted local socket, with statement logging off for that session.
 #   2. Secret <namespace>/minishop-data-credentials, then
 #      <app-namespace>/minishop-app-credentials, patched from stdin and checked
-#      by comparing sha256 hashes.
+#      by comparing sha256 hashes. Each patch carries the resourceVersion read
+#      during the checks, so a concurrent change fails it with 409 Conflict
+#      (and triggers the rollback), and it removes the
+#      kubectl.kubernetes.io/last-applied-configuration annotation, which
+#      would otherwise keep a copy of the old value.
 #   3. A rolling restart of every Deployment, StatefulSet or DaemonSet whose
 #      pod template reads a rotated key from those Secrets (Redis first, since
 #      Redis reads requirepass from its environment at start; then the
@@ -19,9 +23,15 @@
 #   4. Verification: the new passwords log in and the old ones are rejected,
 #      the Redis keys without a TTL are unchanged, and every new backend Pod
 #      answers /ready, /items and /items/<index>/reviews.
-# Clients holding the old password fail to open new connections from step 1
-# until their replacement Pods are ready (owner decision: a short window of
+# Client window: from ALTER ROLE (or the Redis restart, when only Redis
+# rotates) until the backend rollout completes, old backend Pods cannot open
+# new connections; once Redis restarts they fail readiness and go NotReady.
+# The script measures and prints this window (owner decision: a window of
 # authentication failures is accepted; no dual roles).
+#
+# With --apply, a lock on <state-dir>/.lock allows one rotation or recovery at
+# a time from that state directory. The old values must be 16 or more
+# characters of [A-Za-z0-9+/=]; anything else is refused ("rotate manually").
 #
 # Passwords are 32 random bytes as 64 hex characters, generated here and kept
 # only in mode 600 files in a private work directory. They are never printed,
@@ -46,7 +56,8 @@
 #   bash scripts/rotate-data-credentials.sh --context NAME --apply \
 #       --recover DIR --to old|new [options]
 #       After a failed rollback: set the role, both Secrets and the readers to
-#       the old or the new passwords kept in DIR, then delete DIR.
+#       the old or the new passwords kept in DIR, then delete DIR. DIR records
+#       which passwords were rotated; a different --only is refused.
 #
 #   --context NAME            kube context (required; there is no default)
 #   --kubeconfig PATH         kubeconfig (default ./.kube/config)
@@ -78,6 +89,9 @@
 # shellcheck disable=SC2016,SC2034
 
 set -euo pipefail
+# Tracing would print commands that handle password files; `bash -x` must not
+# turn it on. Secret values are also streamed, never held in a variable.
+set +x
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=data-lib.sh
@@ -88,10 +102,28 @@ readonly PG_KEY=postgres-password
 readonly REDIS_KEY=redis-password
 readonly WORK_FORMAT=minishop-rotation/1
 readonly ROLE_PATTERN='^[a-z_][a-z0-9_]{0,62}$'
-# Secret references in a workload's pod template, as "name|secret:key ..."
-# lines; a whole-Secret reference (envFrom, volume) is "secret:*". It reads
-# workloads only, never a Secret.
-readonly READER_JSONPATH='{range .items[*]}{.metadata.name}|{range .spec.template.spec.containers[*].env[*]}{.valueFrom.secretKeyRef.name}:{.valueFrom.secretKeyRef.key} {end}{range .spec.template.spec.initContainers[*].env[*]}{.valueFrom.secretKeyRef.name}:{.valueFrom.secretKeyRef.key} {end}{range .spec.template.spec.containers[*].envFrom[*]}{.secretRef.name}:* {end}{range .spec.template.spec.volumes[*]}{.secret.secretName}:* {end}{"\n"}{end}'
+# Old values are pasted into an SQL literal on rollback and must be caught by
+# redact(), so only base64-alphabet values of 16 or more characters are
+# accepted; anything else is rotated by hand.
+readonly OLD_VALUE_PATTERN='[A-Za-z0-9+/=]{16,}'
+readonly LAST_APPLIED=kubectl.kubernetes.io/last-applied-configuration
+
+# refs_jsonpath POD-SPEC-PATH [EXTRA] prints a jsonpath that lists, per item,
+# "name|EXTRA|secret:key ..." for every Secret reference in the pod spec at
+# POD-SPEC-PATH: env secretKeyRef of containers and initContainers as
+# "secret:key", and envFrom, secret volumes and projected secret sources as
+# "secret:*". It reads workloads only, never a Secret.
+refs_jsonpath() {
+  local p=$1 extra=${2:-} c
+  printf '{range .items[*]}{.metadata.name}|%s|' "$extra"
+  for c in containers initContainers; do
+    printf '{range %s.%s[*].env[*]}{.valueFrom.secretKeyRef.name}:{.valueFrom.secretKeyRef.key} {end}' "$p" "$c"
+    printf '{range %s.%s[*].envFrom[*]}{.secretRef.name}:* {end}' "$p" "$c"
+  done
+  printf '{range %s.volumes[*]}{.secret.secretName}:* {end}' "$p"
+  printf '{range %s.volumes[*].projected.sources[*]}{.secret.name}:* {end}' "$p"
+  printf '{"\\n"}{end}'
+}
 
 usage() {
   sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -154,7 +186,37 @@ if [[ -n "$recover_dir" || -n "$recover_to" ]]; then
 fi
 
 umask 077
-data_require_commands kubectl base64 sha256sum od tr sed awk date mktemp stat realpath cmp
+data_require_commands kubectl base64 sha256sum od tr sed awk date mktemp stat realpath cmp flock
+
+private_dir_ok() { # dir: ours and mode 700
+  [[ "$(stat -c %u -- "$1")" == "$(id -u)" && "$(stat -c %a -- "$1")" == 700 ]]
+}
+
+# --recover: the work directory decides which passwords are involved.
+recover_work=""
+if [[ -n "$recover_dir" ]]; then
+  [[ -d "$recover_dir" ]] || die "$recover_dir is not a directory"
+  recover_work=$(realpath -- "$recover_dir")
+  private_dir_ok "$recover_work" || die "$recover_work must be yours and mode 700"
+  grep -qx "format=$WORK_FORMAT" "$recover_work/rotation.info" 2>/dev/null ||
+    die "$recover_work is not a rotation work directory"
+  grep -qxF "context=$DATA_CONTEXT" "$recover_work/rotation.info" ||
+    die "$recover_work belongs to another context ($(sed -n 's/^context=//p' "$recover_work/rotation.info"))"
+  recorded=()
+  read -r -a recorded_keys <<<"$(sed -n 's/^keys=//p' "$recover_work/rotation.info")"
+  for key in "${recorded_keys[@]}"; do
+    case "$key" in
+      postgres-password) recorded+=(postgresql) ;;
+      redis-password) recorded+=(redis) ;;
+      *) die "$recover_work/rotation.info names an unknown key $key" ;;
+    esac
+  done
+  [[ ${#recorded[@]} -gt 0 ]] || die "$recover_work/rotation.info names no keys"
+  if [[ -n "$only" && "${recorded[*]}" != "$only" ]]; then
+    die "--only $only conflicts with $recover_work, which rotated: ${recorded[*]}"
+  fi
+  components=("${recorded[@]}")
+fi
 
 has_component() {
   local c
@@ -169,7 +231,7 @@ for component in "${components[@]}"; do keys+=("$(key_of "$component")"); done
 # Long base64 or hex runs in error output are replaced, so an error that
 # echoes a request or a statement cannot show a password. Hyphenated
 # Kubernetes names survive, since a hyphen ends a run.
-redact() { sed -E 's/[A-Za-z0-9+\/=]{20,}/<redacted>/g'; }
+redact() { sed -E 's/[A-Za-z0-9+\/=]{16,}/<redacted>/g'; }
 step() { printf '==> %s\n' "$*"; }
 ok() { printf '    ok: %s\n' "$*"; }
 
@@ -187,36 +249,50 @@ kube_quiet() {
 
 # --- Secrets ------------------------------------------------------------------
 # kubectl prints the whole object on a jsonpath error, so stderr of a Secret
-# read is always discarded.
-secret_b64() { # namespace secret key
-  data_kubectl -n "$1" get secret "$2" -o "jsonpath={.data.$3}" 2>/dev/null
+# read is always discarded. Values are streamed from kubectl through base64 -d
+# into a mode 600 file or into sha256sum; no shell variable holds one.
+
+# secret_to_file NAMESPACE SECRET KEY FILE: 1 if the Secret cannot be read,
+# 2 if the key is absent or empty.
+secret_to_file() {
+  data_kubectl -n "$1" get secret "$2" -o "jsonpath={.data.$3}" 2>/dev/null |
+    base64 -d >"$4" 2>/dev/null || return 1
+  [[ -s "$4" ]] || return 2
 }
 
 # sha256 of a Secret value, "missing" when the key is absent or empty, or
 # "unreadable" when the Secret cannot be read.
 secret_sha() { # namespace secret key
-  local b64
-  b64=$(secret_b64 "$@") || { echo unreadable; return 0; }
-  [[ -n "$b64" ]] || { echo missing; return 0; }
-  base64 -d <<<"$b64" | sha256sum | cut -c1-64
+  local probe="$work/.probe" status=0
+  secret_to_file "$1" "$2" "$3" "$probe" || status=$?
+  case "$status" in
+    0) file_sha "$probe" ;;
+    1) echo unreadable ;;
+    *) echo missing ;;
+  esac
+  rm -f -- "$probe"
 }
 
 file_sha() { sha256sum <"$1" | cut -c1-64; }
 
-secret_to_file() { # namespace secret key file
-  local b64
-  b64=$(secret_b64 "$1" "$2" "$3") || return 1
-  [[ -n "$b64" ]] || return 1
-  base64 -d <<<"$b64" >"$4"
+# resourceVersion of a Secret (metadata only; stderr discarded all the same).
+secret_version() { # namespace secret
+  data_kubectl -n "$1" get secret "$2" -o 'jsonpath={.metadata.resourceVersion}' 2>/dev/null
 }
 
-# patch_secret NAMESPACE SECRET DIR KEY... sets each KEY to the content of
-# DIR/KEY. The patch goes through stdin, never the command line.
+# patch_secret NAMESPACE SECRET VERSION DIR KEY... sets each KEY to the content
+# of DIR/KEY. The patch goes through stdin, never the command line. A
+# non-empty VERSION makes the API server refuse the patch (409 Conflict) if
+# the Secret changed since it was read. The patch also removes the
+# last-applied-configuration annotation that `kubectl apply` left, which
+# would otherwise keep a copy of the replaced value.
 patch_secret() {
-  local ns=$1 name=$2 dir=$3 sep="" key
-  shift 3
+  local ns=$1 name=$2 version=$3 dir=$4 sep="" key
+  shift 4
   {
-    printf '{"data":{'
+    printf '{"metadata":{'
+    [[ -z "$version" ]] || printf '"resourceVersion":"%s",' "$version"
+    printf '"annotations":{"%s":null}},"data":{' "$LAST_APPLIED"
     for key in "$@"; do
       printf '%s"%s":"' "$sep" "$key"
       base64 -w0 <"$dir/$key"
@@ -308,45 +384,63 @@ owner_of_pod() { # pod -> statefulset/<name>
   echo "statefulset/$owner"
 }
 
-# "namespace kind/name" for each workload that reads a rotated key from the
+# refs_hit REFS SECRET: REFS (from refs_jsonpath) read a rotated key of SECRET.
+refs_hit() {
+  local key
+  [[ " $1 " == *" $2:* "* ]] && return 0
+  for key in "${keys[@]}"; do
+    [[ " $1 " == *" $2:$key "* ]] && return 0
+  done
+  return 1
+}
+
+secret_of_namespace() { [[ "$1" == "$app_namespace" ]] && echo "$app_secret" || echo "$data_secret"; }
+
+# scan_refs KIND POD-SPEC-PATH [EXTRA] prints "namespace|name|extra|refs" for
+# every KIND in both namespaces whose pod spec reads a rotated key from the
 # Secret of its namespace.
-list_readers() {
-  local ns secret kind name refs key hit
+scan_refs() {
+  local kind=$1 path=$2 extra=${3:-} ns secret listing name more refs
   for ns in "$DATA_NAMESPACE" "$app_namespace"; do
-    secret=$data_secret
-    [[ "$ns" == "$app_namespace" ]] && secret=$app_secret
-    for kind in deployment statefulset daemonset; do
-      local listing
-      listing=$(data_kubectl -n "$ns" get "$kind" -o "jsonpath=$READER_JSONPATH") || return 1
-      while IFS='|' read -r name refs; do
-        [[ -n "$name" ]] || continue
-        hit=false
-        [[ " $refs " == *" $secret:* "* ]] && hit=true
-        for key in "${keys[@]}"; do
-          [[ " $refs " == *" $secret:$key "* ]] && hit=true
-        done
-        if [[ "$hit" == true ]]; then printf '%s %s/%s\n' "$ns" "$kind" "$name"; fi
-      done <<<"$listing"
-    done
+    secret=$(secret_of_namespace "$ns")
+    listing=$(data_kubectl -n "$ns" get "$kind" -o "jsonpath=$(refs_jsonpath "$path" "$extra")") || return 1
+    while IFS='|' read -r name more refs; do
+      [[ -n "$name" ]] || continue
+      if refs_hit "$refs" "$secret"; then printf '%s|%s|%s\n' "$ns" "$name" "$more"; fi
+    done <<<"$listing"
   done
 }
 
-# Running Jobs that read either Secret would keep the old password; finished
-# ones do not matter.
-list_active_jobs() {
-  local ns secret listing name active refs
-  for ns in "$DATA_NAMESPACE" "$app_namespace"; do
-    secret=$data_secret
-    [[ "$ns" == "$app_namespace" ]] && secret=$app_secret
-    listing=$(data_kubectl -n "$ns" get jobs -o \
-      "jsonpath={range .items[*]}{.metadata.name}|{.status.active}|{range .spec.template.spec.containers[*].env[*]}{.valueFrom.secretKeyRef.name}:x {end}{range .spec.template.spec.containers[*].envFrom[*]}{.secretRef.name}:x {end}{\"\\n\"}{end}") ||
-      return 1
-    while IFS='|' read -r name active refs; do
-      if [[ -n "$name" && "${active:-0}" -gt 0 && " $refs " == *" $secret:x "* ]]; then
-        printf '%s job/%s\n' "$ns" "$name"
-      fi
-    done <<<"$listing"
+# "namespace kind/name" for each workload that reads a rotated key from the
+# Secret of its namespace.
+list_readers() {
+  local kind lines ns name
+  for kind in deployment statefulset daemonset; do
+    lines=$(scan_refs "$kind" .spec.template.spec) || return 1
+    while IFS='|' read -r ns name _; do
+      if [[ -n "$name" ]]; then printf '%s %s/%s\n' "$ns" "$kind" "$name"; fi
+    done <<<"$lines"
   done
+}
+
+# Running Jobs (including those a CronJob started) that read either Secret
+# would keep the old password; finished ones do not matter.
+list_active_jobs() {
+  local lines ns name active
+  lines=$(scan_refs job .spec.template.spec '{.status.active}') || return 1
+  while IFS='|' read -r ns name active; do
+    if [[ -n "$name" && "${active:-0}" -gt 0 ]]; then printf '%s job/%s\n' "$ns" "$name"; fi
+  done <<<"$lines"
+}
+
+# CronJobs that read either Secret need no restart: each run reads the
+# Secret when its Pod starts. They are listed so the operator knows.
+list_cronjobs() {
+  local lines ns name
+  lines=$(scan_refs cronjob .spec.jobTemplate.spec.template.spec) || return 1
+  while IFS='|' read -r ns name _; do
+    if [[ -n "$name" ]]; then printf '%s/cronjob/%s ' "$ns" "$name"; fi
+  done <<<"$lines"
 }
 
 restart_workload() { # namespace kind/name
@@ -446,27 +540,32 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 130' INT TERM HUP
 
-private_dir_ok() { # dir: ours and mode 700
-  [[ "$(stat -c %u -- "$1")" == "$(id -u)" && "$(stat -c %a -- "$1")" == 700 ]]
-}
-
-if [[ -n "$recover_dir" ]]; then
-  [[ -d "$recover_dir" ]] || die "$recover_dir is not a directory"
-  work=$(realpath -- "$recover_dir")
-  keep_work=true
-  grep -qx "format=$WORK_FORMAT" "$work/rotation.info" 2>/dev/null ||
-    die "$work is not a rotation work directory"
-  grep -qxF "context=$DATA_CONTEXT" "$work/rotation.info" ||
-    die "$work belongs to another context ($(sed -n 's/^context=//p' "$work/rotation.info"))"
-  private_dir_ok "$work" || die "$work must be yours and mode 700"
-else
-  case "$(realpath -m -- "$state_root")/" in
-    "$DATA_REPO_ROOT"/*) die "--state-dir $state_root is inside the repository" ;;
-  esac
+case "$(realpath -m -- "$state_root")/" in
+  "$DATA_REPO_ROOT"/*) die "--state-dir $state_root is inside the repository" ;;
+esac
+# Only a directory created here is chmodded; an existing one must already be
+# private.
+if [[ ! -e "$state_root" ]]; then
   mkdir -p -- "$state_root"
   chmod 700 -- "$state_root"
-  private_dir_ok "$state_root" ||
-    die "$state_root must be yours and mode 700 (Windows drives under /mnt cannot enforce this)"
+fi
+[[ -d "$state_root" ]] || die "$state_root is not a directory"
+private_dir_ok "$state_root" ||
+  die "$state_root must be yours and mode 700 (Windows drives under /mnt cannot enforce this)"
+
+# One rotation or recovery at a time from this state directory. The lock is
+# released when the script exits. A second operator elsewhere is caught by
+# the resourceVersion in each Secret patch instead.
+if [[ "$apply" == true ]]; then
+  exec {lock_fd}>>"$state_root/.lock"
+  flock -n "$lock_fd" ||
+    die "another rotation or recovery holds $state_root/.lock; wait for it to finish"
+fi
+
+if [[ -n "$recover_dir" ]]; then
+  work=$recover_work
+  keep_work=true
+else
   work=$(mktemp -d "$state_root/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
   mkdir -m 700 -- "$work/old" "$work/new"
   printf 'format=%s\ncontext=%s\nkeys=%s\n' "$WORK_FORMAT" "$DATA_CONTEXT" "${keys[*]}" >"$work/rotation.info"
@@ -490,6 +589,19 @@ backend_user=$(data_kubectl -n "$app_namespace" get deployment "$backend" -o \
   die "$backend connects as PostgreSQL user '${backend_user:-unset}', not --pg-role $pg_role"
 ok "role $pg_role exists and is the role $backend uses"
 
+# resourceVersions are read before the values, so a change after this point,
+# even one that lands before the values are read, makes the forward patches
+# fail with 409 Conflict instead of overwriting it.
+data_version=$(secret_version "$DATA_NAMESPACE" "$data_secret") || data_version=""
+app_version=$(secret_version "$app_namespace" "$app_secret") || app_version=""
+[[ -n "$data_version" && -n "$app_version" ]] ||
+  die "cannot read the resourceVersion of both Secrets (missing, or no permission)"
+
+# value_ok FILE: one line of base64-alphabet characters, 16 or more.
+value_ok() {
+  [[ "$(wc -l <"$1")" -eq 0 ]] && grep -Eqx "$OLD_VALUE_PATTERN" "$1"
+}
+
 for secret_ref in "$DATA_NAMESPACE/$data_secret" "$app_namespace/$app_secret"; do
   for key in "${keys[@]}"; do
     case "$(secret_sha "${secret_ref%%/*}" "${secret_ref#*/}" "$key")" in
@@ -504,6 +616,8 @@ if [[ -z "$recover_dir" ]]; then
     key=$(key_of "$component")
     secret_to_file "$DATA_NAMESPACE" "$data_secret" "$key" "$work/old/$key" ||
       die "cannot read $key from $DATA_NAMESPACE/$data_secret"
+    value_ok "$work/old/$key" ||
+      die "the current $key is not 16 or more characters of [A-Za-z0-9+/=], so a rollback could not restore it safely; rotate manually"
     secret_holds "$app_namespace" "$app_secret" "$work/old" "$key" ||
       die "$key differs between $DATA_NAMESPACE/$data_secret and $app_namespace/$app_secret; make them consistent before rotating"
     result=$(login "$component" "$work/old/$key")
@@ -514,6 +628,7 @@ if [[ -z "$recover_dir" ]]; then
 else
   for key in "${keys[@]}"; do
     [[ -s "$work/$recover_to/$key" ]] || die "$work/$recover_to has no $key"
+    value_ok "$work/$recover_to/$key" || die "$work/$recover_to/$key is not a value this script wrote"
   done
 fi
 
@@ -536,6 +651,10 @@ grep -qxF "$app_namespace deployment/$backend" <<<"$readers" ||
 active_jobs=$(list_active_jobs) || die "could not list Jobs"
 [[ -z "$active_jobs" ]] ||
   die "running Jobs read the Secrets and would keep the old password; wait for them: $(tr '\n' ' ' <<<"$active_jobs")"
+cronjobs=$(list_cronjobs) || die "could not list CronJobs"
+if [[ -n "$cronjobs" ]]; then
+  printf '    CronJobs that read the Secrets pick up the new password on their next run: %s\n' "$cronjobs"
+fi
 
 if [[ -z "$recover_dir" ]]; then
   check_backend || die "the backend is not healthy before the rotation; fix that first"
@@ -577,7 +696,8 @@ for reader in "${plan[@]}"; do
 done
 printf '    not restarted: %s/%s (reads the password only at initdb; probes use the local socket)\n' \
   "$DATA_NAMESPACE" "$pg_sts"
-printf '    expect authentication failures from old Pods until their replacements are ready\n'
+printf '    expect failures from the first credential change until the backend rollout completes:\n'
+printf '    old backend Pods cannot open new connections and go NotReady once Redis restarts\n'
 
 if [[ "$apply" != true ]]; then
   printf 'Dry run: nothing was changed. Re-run with --apply to rotate.\n'
@@ -623,7 +743,7 @@ recovery_hint() {
     --data-secret "$data_secret" --app-secret "$app_secret" --pg-pod "$DATA_PG_POD"
     --redis-pod "$DATA_REDIS_POD" --pg-role "$pg_role" --backend "$backend")
   [[ -n "$only" ]] && args+=(--only "$only")
-  args+=(--apply --recover "$work" --to)
+  args+=(--timeout "$timeout" --state-dir "$state_root" --apply --recover "$work" --to)
   printf '  The old and new passwords are kept (mode 600, never printed) in %s\n' "$work" >&2
   printf '  To put everything back on the old passwords:\n    %sold\n' "$(printf '%q ' "${args[@]}")" >&2
   printf '  Or to finish on the new passwords:\n    %snew\n' "$(printf '%q ' "${args[@]}")" >&2
@@ -638,7 +758,8 @@ rollback() {
   print_state
   printf '  Rolling back to the old passwords.\n' >&2
   if [[ "$st_app" != old ]]; then
-    if patch_secret "$app_namespace" "$app_secret" "$other_dir" "${keys[@]}" &&
+    # No resourceVersion: the rollback must win over whatever is there.
+    if patch_secret "$app_namespace" "$app_secret" "" "$other_dir" "${keys[@]}" &&
       secret_holds "$app_namespace" "$app_secret" "$other_dir" "${keys[@]}"; then
       st_app=old
     else
@@ -646,7 +767,7 @@ rollback() {
     fi
   fi
   if [[ "$st_data" != old ]]; then
-    if patch_secret "$DATA_NAMESPACE" "$data_secret" "$other_dir" "${keys[@]}" &&
+    if patch_secret "$DATA_NAMESPACE" "$data_secret" "" "$other_dir" "${keys[@]}" &&
       secret_holds "$DATA_NAMESPACE" "$data_secret" "$other_dir" "${keys[@]}"; then
       st_data=old
     else
@@ -692,6 +813,7 @@ rollback() {
 fail_recover() {
   local status=$?
   trap - EXIT
+  trap '' INT TERM HUP
   set +e
   printf '\n!!! Recovery failed during: %s\n' "$phase" >&2
   printf '  The role and the Secrets are being set to the %s passwords; parts done so far:\n' "$recover_to" >&2
@@ -709,10 +831,25 @@ else
 fi
 target_word=new
 [[ -n "$recover_dir" ]] && target_word=$recover_to
+forward_data_version=$data_version
+forward_app_version=$app_version
+
+# The client-visible window runs from the first change a running client can
+# notice (ALTER ROLE, or the Redis restart when only Redis rotates) until the
+# last rollout finishes.
+window_start=""
+window_from=""
+mark_window() { # what changed
+  if [[ -z "$window_start" ]]; then
+    window_start=$(date +%s.%N)
+    window_from=$1
+  fi
+}
 
 if has_component postgresql; then
   phase="ALTER ROLE $pg_role"
   step "$phase"
+  mark_window "ALTER ROLE"
   st_role=unknown
   pg_set_password "$target_dir/$PG_KEY" || die "ALTER ROLE failed"
   st_role=$target_word
@@ -722,7 +859,8 @@ fi
 phase="patch Secret $DATA_NAMESPACE/$data_secret"
 step "$phase"
 st_data=unknown
-patch_secret "$DATA_NAMESPACE" "$data_secret" "$target_dir" "${keys[@]}" || die "Secret patch failed"
+patch_secret "$DATA_NAMESPACE" "$data_secret" "$forward_data_version" "$target_dir" "${keys[@]}" ||
+  die "Secret patch failed (409 Conflict means the Secret changed after the checks)"
 secret_holds "$DATA_NAMESPACE" "$data_secret" "$target_dir" "${keys[@]}" ||
   die "Secret $DATA_NAMESPACE/$data_secret does not hold the $target_word passwords after the patch"
 st_data=$target_word
@@ -731,7 +869,8 @@ ok "sha256 of ${keys[*]} matches the $target_word passwords"
 phase="patch Secret $app_namespace/$app_secret"
 step "$phase"
 st_app=unknown
-patch_secret "$app_namespace" "$app_secret" "$target_dir" "${keys[@]}" || die "Secret patch failed"
+patch_secret "$app_namespace" "$app_secret" "$forward_app_version" "$target_dir" "${keys[@]}" ||
+  die "Secret patch failed (409 Conflict means the Secret changed after the checks)"
 secret_holds "$app_namespace" "$app_secret" "$target_dir" "${keys[@]}" ||
   die "Secret $app_namespace/$app_secret does not hold the $target_word passwords after the patch"
 st_app=$target_word
@@ -740,10 +879,15 @@ ok "sha256 of ${keys[*]} matches the $target_word passwords"
 for reader in "${plan[@]}"; do
   phase="rolling restart of ${reader%% *}/${reader#* }"
   step "$phase"
+  mark_window "the ${reader#* } restart"
   restarted+=("$reader")
   restart_workload "${reader%% *}" "${reader#* }" || die "restart failed"
   wait_workload "${reader%% *}" "${reader#* }" || die "rollout did not finish"
 done
+if [[ -n "$window_start" ]]; then
+  window_seconds=$(awk -v a="$window_start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+  ok "client window: ${window_seconds} s from $window_from until the last rollout finished"
+fi
 
 phase="verification"
 step "Verify"
@@ -778,4 +922,6 @@ else
   printf 'Rotation complete: %s rotated in the role, both Secrets and their readers.\n' "${keys[*]}"
 fi
 printf 'The previous passwords no longer work. Operators who keep MINISHOP_POSTGRES_PASSWORD or\n'
-printf 'MINISHOP_REDIS_PASSWORD must not re-run create-*-credentials.sh with the old values.\n'
+printf 'MINISHOP_REDIS_PASSWORD must not re-run create-data-credentials.sh, create-app-credentials.sh,\n'
+printf 'deploy-data.sh or deploy-kustomize-dev.sh with the old values: those write them back into\n'
+printf 'the Secrets without changing the role, and the next restart fails to log in.\n'
