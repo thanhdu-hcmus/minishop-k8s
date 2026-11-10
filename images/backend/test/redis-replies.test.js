@@ -67,10 +67,10 @@ test("ping fails within its timeout and closes the socket when PING is never ans
   assert.equal(await fake.waitForAllClosed(CLOSE_WAIT_MS), true, "client socket left open");
 });
 
-test("import fails within the bound and closes the socket when SET is never answered", { timeout: TEST_TIMEOUT_MS }, async t => {
+test("seed fails within the bound and closes the socket when SET is never answered", { timeout: TEST_TIMEOUT_MS }, async t => {
   const fake = await useFakeRedis(t, { stall: ["SET"] });
 
-  const result = await timed(() => redis.importData());
+  const result = await timed(() => redis.seedData());
 
   assert.ok(result.error instanceof DependencyTimeoutError, String(result.error));
   assert.ok(result.milliseconds < MAX_ELAPSED_MS, `took ${result.milliseconds} ms`);

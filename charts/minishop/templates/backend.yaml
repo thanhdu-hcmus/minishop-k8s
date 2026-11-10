@@ -59,28 +59,7 @@ spec:
             - containerPort: 3001
               name: http
           env:
-            - name: POSTGRES_DB
-              value: minishop
-            - name: POSTGRES_HOST
-              value: minishop-postgresql.data.svc.cluster.local
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: postgres-password
-                  name: {{ .Values.credentials.appSecretName }}
-            - name: POSTGRES_PORT_NUM
-              value: "5432"
-            - name: POSTGRES_USER
-              value: minishop
-            - name: REDIS_HOST
-              value: minishop-redis.data.svc.cluster.local
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: redis-password
-                  name: {{ .Values.credentials.appSecretName }}
-            - name: REDIS_PORT
-              value: "6379"
+            {{- include "minishop.dataEnv" . | nindent 12 }}
           # Liveness is process-only; readiness checks PostgreSQL and Redis.
           livenessProbe:
             httpGet:

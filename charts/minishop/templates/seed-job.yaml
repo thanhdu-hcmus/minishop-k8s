@@ -1,0 +1,135 @@
+{{- /*
+Opt-in seed Job (#40), off by default. It runs `node seed.js` from the pinned
+backend image, which replaces the removed POST /upload: rows are inserted only
+into an empty marketItems table and Redis review keys only when absent, so a
+rerun or a run against a populated database changes nothing.
+
+A plain Job rather than a Helm hook: it is part of the release manifest, so it
+is visible in `helm get manifest`, removed when seed.enabled is turned off, and
+it never blocks or fails `helm upgrade --wait`. It retries until PostgreSQL and
+Redis answer instead of depending on hook ordering.
+
+Job pod templates are immutable, so the name carries a hash of the pod template:
+a new image or setting creates a new Job, and Helm deletes the old one, instead
+of failing the upgrade. After ttlSecondsAfterFinished removes a finished Job, the
+next upgrade recreates it and it runs again, which is safe because it is
+idempotent.
+*/ -}}
+{{- if .Values.seed.enabled }}
+{{- $podTemplate := include "minishop.seedPodTemplate" . }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minishop-seed-{{ $podTemplate | sha256sum | trunc 8 }}
+  namespace: webapp
+  labels:
+    app.kubernetes.io/component: seed
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/part-of: minishop
+spec:
+  # A fresh install starts the Job before PostgreSQL finishes initializing, and
+  # early attempts fail with ECONNREFUSED. Up to 7 attempts with 10 s to 320 s
+  # back-off (about 630 s in total), bounded overall at 15 minutes.
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  # Keep the finished Job and its Pod logs for a day, then let Kubernetes delete it.
+  ttlSecondsAfterFinished: 86400
+  template:
+    {{- $podTemplate | nindent 4 }}
+---
+# Egress only to PostgreSQL, Redis, and DNS; no ingress. minishop-default-deny
+# also selects this Pod through part-of=minishop.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minishop-seed
+  namespace: webapp
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: seed
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/part-of: minishop
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: database
+              app.kubernetes.io/name: minishop-postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: cache
+              app.kubernetes.io/name: minishop-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+{{- end }}
+
+{{- define "minishop.seedPodTemplate" -}}
+metadata:
+  labels:
+    app.kubernetes.io/component: seed
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/part-of: minishop
+spec:
+  # Each failed attempt is a new Pod, so its logs stay available.
+  restartPolicy: Never
+  # The seed needs no Kubernetes API access; the namespace default
+  # ServiceAccount is used without a token.
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsGroup: 1000
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: seed
+      image: {{ include "minishop.image" (dict "root" . "name" "backend") }}
+      imagePullPolicy: IfNotPresent
+      command:
+        - node
+        - seed.js
+      env:
+        {{- include "minishop.dataEnv" . | nindent 8 }}
+        # Looser than the request-path defaults: the seed may wait on the
+        # advisory lock held by an overlapping run, and writes 100 keys at once.
+        - name: POSTGRES_QUERY_TIMEOUT
+          value: "30000"
+        - name: REDIS_COMMAND_TIMEOUT_MS
+          value: "10000"
+      resources:
+        {{- toYaml .Values.seed.resources | nindent 8 }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+{{- end -}}

@@ -10,7 +10,7 @@ FROM dependencies AS test
 
 COPY app ./app
 COPY db/items.json ./db/items.json
-COPY index.js ./
+COPY index.js seed.js ./
 COPY test ./test
 
 RUN npm test
@@ -32,7 +32,7 @@ COPY LICENSE ./LICENSE
 COPY package.json ./
 COPY app ./app
 COPY db/items.json ./db/items.json
-COPY index.js ./
+COPY index.js seed.js ./
 
 EXPOSE 3001
 

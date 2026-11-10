@@ -168,16 +168,17 @@ test("GET /items/:id/reviews returns 500 on other Redis errors", async t => {
   assert.equal(response.status, 500);
 });
 
-test("POST /upload returns 503 when a dependency is unreachable", async t => {
-  t.mock.method(redis, "importData", async () => {
-    throw withCode(new Error("connect ECONNREFUSED 10.0.0.2:6379"), "ECONNREFUSED");
-  });
-  t.mock.method(postgresql, "importData", async () => {});
+test("POST /upload is not served and writes nothing", async t => {
+  const writes = [
+    t.mock.method(postgresql, "seedData", async () => ({ inserted: 0, skipped: true })),
+    t.mock.method(redis, "seedData", async () => ({ written: 0, kept: 0 }))
+  ];
 
-  const response = await request("POST", "/upload");
-
-  assert.equal(response.status, 503);
-  assert.deepEqual(JSON.parse(response.text), { error: "Mock data import failed" });
+  for (const method of ["POST", "GET", "PUT"]) {
+    const response = await request(method, "/upload");
+    assert.equal(response.status, 404, `${method} /upload`);
+  }
+  assert.ok(writes.every(write => write.mock.callCount() === 0));
 });
 
 test("PostgreSQL bounds each query and the pool connection", () => {

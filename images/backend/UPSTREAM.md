@@ -26,12 +26,21 @@ Each modified file carries a "Derived from ... Modified for ..." header.
   dependency is unavailable and 500 otherwise, with no error text in the body;
   `GET /live` (process only) and `GET /ready` (PostgreSQL and Redis) were
   added; the special-offer loop no longer indexes past the results (#39).
+  `POST /upload` is removed and answers 404 (#40): it was unauthenticated
+  and dropped the table. The upstream `importData` functions in `app/redis.js`
+  and `app/postgresql.js` are removed with it.
 - `app/postgresql.js`: the import runs in one transaction with parameterized
   inserts and releases or discards its client (#43). Idle pool errors are
   logged instead of exiting the process, queries and the logging DNS lookup
   are bounded, and a readiness ping and SQLSTATE helper were added (#39).
 - `app/dependency.js` (new, #39): deadlines, timeout parsing, and the
   unavailable-versus-internal error classification.
+- `seed.js` (new, #40): the seed command for the chart's opt-in seed Job.
+  `app/postgresql.js` gained `seedData`, which creates `marketItems` only if it
+  is missing and inserts the seed rows only into an empty table, in one
+  transaction under an advisory lock. `app/redis.js` gained `seedData`, which
+  writes review keys with `SET ... NX`. Neither drops, truncates, or
+  overwrites data.
 
 ## Runtime notes
 

@@ -196,14 +196,84 @@ bash scripts/validate-helm.sh
 ```
 
 The two validators render the dev/prod configurations and run schema checks;
-they do not install or upgrade workloads. `bash scripts/validate-app.sh` is only
-conditionally read-only. It probes through the Pod resolved by the
-`part-of=minishop` selector and checks `GET /items?q=`:
+they do not install or upgrade workloads. Since Issue #40 `bash
+scripts/validate-app.sh` no longer seeds. Before any request it checks every
+backend container:
 
-- Items present: it skips `POST /upload`, then checks the reviews route.
-- Empty list or PostgreSQL code `42P01`: it calls `POST /upload`, which drops
-  and recreates the table, then rechecks both routes.
-- Any other response: it fails without uploading.
+- Both its requested image (Pod spec) and its running image ID must be an
+  anchored `ghcr.io/thanhdu-hcmus/minishop-backend@sha256:<64 hex>` reference;
+  otherwise, or if no backend Pod reports a container, it exits 1. The spec is
+  checked too because the runtime reports the image ID by content, so a Pod
+  that requests the same bytes under another name still shows the ghcr.io name.
+- It runs `test -f /usr/src/app/seed.js` in the container (`kubectl exec`).
+  Only #40 and later images ship that file. If any container lacks it, or runs
+  one of the four pre-#40 published digests (`e87390d3...`, `44a87d71...`,
+  `599480a8...`, `f10f726b...`), the script prints a WARNING and skips only the
+  `POST /upload` probe, because those images would drop and reseed the table.
+  If the exec itself fails, it exits 1.
+
+It then probes through the Pod resolved by the `part-of=minishop` selector:
+
+- `GET /items?q=` must return items. An empty list or 500 with `42P01` fails
+  with a hint to seed through the chart seed Job; no POST is sent.
+- Unless skipped, `POST /upload` must answer 404 and leave the item list
+  unchanged.
+- The reviews route must return reviews.
+
+While the chart still pins a pre-#40 image (until the #40 pin PR is
+deployed), expect the WARNING and `POST /upload probe skipped`; the script
+still exits 0 when the read checks pass.
+
+### Seeding an empty database
+
+#40 removes `POST /upload` from the backend (Express answers 404). Seeding is
+an opt-in chart Job, `seed.enabled` (default `false`), that runs `seed.js` from
+the backend image. It creates `marketitems` only if missing, inserts the 100
+items only into an empty table (one transaction under an advisory lock, with
+`ON CONFLICT DO NOTHING`), and writes Redis keys with `SET NX`. It never drops,
+truncates, or overwrites data. It does refill a deliberately emptied table, and
+a rerun recreates any deliberately deleted Redis review key, because `SET NX`
+writes every absent key. See
+[ADR 0014](./decisions/0014-seed-job-replaces-upload.md).
+
+Do not enable it while the chart pins `599480a8...`; that image has no
+`seed.js`. After the pin PR that moves to a #40 image is deployed, and only for
+an empty database, seed it as follows (`deploy-helm.sh` has no flag for it):
+
+1. Edit `charts/minishop/values-dev.yaml` locally to add:
+
+   ```yaml
+   seed:
+     enabled: true
+   ```
+
+   Helm merges this over `values.yaml`, so `seed.resources` keeps its
+   defaults. Never commit this edit.
+2. Back up first: `bash scripts/backup-data.sh` (from PR #54).
+3. Deploy: `PATH="$PWD/.tools/bin:$PATH" bash scripts/deploy-helm.sh
+   values-dev.yaml`.
+4. Wait until the Job is Complete (this only reads the cluster):
+
+   ```bash
+   KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+     wait --for=condition=complete job -l app.kubernetes.io/component=seed \
+     --timeout=900s
+   KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp \
+     get jobs,pods -l app.kubernetes.io/component=seed
+   ```
+
+5. Revert the edit (`git checkout -- charts/minishop/values-dev.yaml` in WSL)
+   and deploy again with the same command. Helm then deletes the seed Job and
+   NetworkPolicy `minishop-seed`.
+6. Run `bash scripts/validate-app.sh`. Confirm `git status` shows no change to
+   `values-dev.yaml`.
+
+The Job name includes a pod-template hash, so a new image creates a new Job.
+It retries up to `backoffLimit: 6` within `activeDeadlineSeconds: 900`; early
+`ECONNREFUSED` failures are expected while the data services start. It is
+deleted 24 h after finishing, and the next `helm upgrade` recreates it, which
+is harmless because it is idempotent. NetworkPolicy `minishop-seed` allows its
+egress only to PostgreSQL, Redis, and DNS.
 
 The frontend root check is distinct from database-backed item behavior, so
 inspect the response body as well as the status. The item route first returned
@@ -224,15 +294,15 @@ KUBECONFIG=./.kube/config kubectl --context kind-learn -n webapp   get deploymen
 
 On this image:
 
-- `/items`, the reviews route, and `POST /upload` return 503 when PostgreSQL or
+- `/items` and the reviews route return 503 when PostgreSQL or
   Redis is unreachable, refusing service, or timed out, and 500 for other
   failures, with JSON `{"error": "...", "code": "<SQLSTATE>"}` (`code` only for
   PostgreSQL errors). An unseeded table returns 500 with `42P01`, the only
-  unseeded form `validate-app.sh` accepts; the 200-with-`42P01` form of older
-  images now fails the validator without uploading. Reviews of an item with no
+  unseeded form. Reviews of an item with no
   reviews still return 200 with `{}`.
-- `POST /upload` returns 200 and loads 100 rows and 100 Redis keys; a repeat
-  upload stays at 100 rows. It is unauthenticated and drops the table first.
+- `POST /upload` is still served: it is unauthenticated and drops the table
+  first. The #40 backend removes it, but only after a pin PR deploys that
+  image; until then `validate-app.sh` warns and skips its `/upload` probe.
 - The liveness probe uses `GET /live` (process only) and the readiness probe
   uses `GET /ready` (PostgreSQL and Redis), in both the chart and the raw
   manifest. Probe timings are unchanged.
@@ -247,7 +317,8 @@ On this image:
   [ADR 0010](./decisions/0010-backend-dependency-health.md) and the
   [Issue #47 record](./devlog/2026-11-08-health-image-pin.md).
 
-Known gap: `POST /upload` is unauthenticated and drops the table when called.
+Known gap: the pinned image still serves the unauthenticated, destructive
+`POST /upload` until the #40 image is pinned and deployed.
 The legacy frontend that overlapped the `minishop-frontend` selectors was
 retired by the Issue #38 runbook.
 
