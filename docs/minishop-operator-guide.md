@@ -400,6 +400,112 @@ Known monitoring gaps:
 - Alertmanager receivers have not been checked. Alerts may be visible only in
   its UI.
 
+## Centralized logging (ELK)
+
+Issue #59 adds an ECK-managed logging stack in `manifests/40-logging/`:
+one-node Elasticsearch 9.4.9, Kibana 9.4.9, and a Filebeat 9.4.9 DaemonSet in
+namespace `logging`. The ECK 3.2.0 operator runs in `elastic-system`.
+Prometheus and Grafana remain the metrics and alerting stack; Elasticsearch
+holds logs only ([ADR 0017](./decisions/0017-eck-logging-stack.md),
+[ADR 0007](./decisions/0007-platform-observability.md)). As of 2026-11-14 the
+stack is **not deployed on kind-learn**; it was verified on a throwaway
+cluster only.
+
+**Prerequisites.** The ECK CRDs, the operator's cluster-wide RBAC, Filebeat's
+ClusterRole, and Filebeat running as root with hostPath mounts all need the
+owner's approval at deploy time. Check memory first and continue only with
+about 6 GiB available in WSL:
+
+```bash
+free -m
+```
+
+The stack measured about 2.8-2.9 GiB (estimated for four nodes from a
+three-node test), and `vm.max_map_count` must be at least 262144 on every
+node (it is on kind-learn today).
+
+**Deploy, in order,** from the repository root. Each step changes the
+cluster:
+
+```bash
+bash scripts/deploy-eck.sh         # CRDs, operator, RBAC, webhook (cluster-wide)
+bash scripts/deploy-logging.sh     # namespace, policies, Elasticsearch, ILM, Kibana, Filebeat
+bash scripts/validate-logging.sh   # health, ILM, and a backend test line searchable
+```
+
+Then record the real usage:
+
+```bash
+export KUBECONFIG=./.kube/config
+kubectl --context kind-learn top pods -n logging
+kubectl --context kind-learn top pods -n elastic-system
+kubectl --context kind-learn top nodes
+free -m
+```
+
+**Kibana access.** There is no Ingress. Port-forward in its own terminal and
+keep it running:
+
+```bash
+kubectl --context kind-learn -n logging port-forward service/logging-kb-http 5601
+```
+
+Open <https://localhost:5601>. ECK serves a self-signed certificate, so the
+browser shows a certificate warning; accept it for `localhost` only.
+
+The user is `elastic`. Its password is in Secret
+`logging/logging-es-elastic-user`. Read it only in your own terminal, and
+never paste it into docs, Issues, or logs:
+
+```bash
+kubectl --context kind-learn -n logging get secret logging-es-elastic-user \
+  -o jsonpath='{.data.elastic}' | base64 -d; echo
+```
+
+The scripts never read this Secret; they call the Elasticsearch API from
+inside its container.
+
+**Find logs.** Filebeat does not load Kibana dashboards. Once, create a data
+view: **Stack Management → Data views → Create**, index pattern `filebeat-*`,
+timestamp `@timestamp`. Then use **Discover**. Useful fields:
+
+- `message`: the log line; for the backend, the pino `msg`.
+- `log.level`: for the backend, the pino number mapped to a name (30 is
+  `info`).
+- `pino.*`: the backend's decoded JSON fields, such as `pino.name` and
+  `pino.level`. Only Pods in `webapp` with
+  `app.kubernetes.io/component=minishop-backend` are decoded.
+- `kubernetes.*`: namespace, Pod, container, node, and labels, for example
+  `kubernetes.namespace : "webapp"`.
+
+**Retention.** ILM policy `minishop-logs` rolls an index over daily or at a
+1gb primary shard and deletes it 3 days after rollover, so logs live about 4
+days. Indices have 0 replicas. local-path does not enforce the 10Gi volume
+size; the ILM delete phase is the bound.
+
+**Validate** at any time with `bash scripts/validate-logging.sh`
+(`--timeout SECONDS`, default 180, for the test line).
+
+**Memory budget.** Measured on the throwaway cluster (run 7): Elasticsearch
+1608 MiB, Kibana 946 MiB, Filebeat 49-76 MiB per Pod, operator 37 MiB.
+Requests add about 1000m CPU and 4.2Gi memory; limits add about 5.7Gi. Real
+numbers on kind-learn are not recorded yet.
+
+**Teardown.** This deletes every stored log; MiniShop namespaces are not
+touched:
+
+```bash
+bash scripts/teardown-logging.sh                    # lists what would go; changes nothing
+bash scripts/teardown-logging.sh --yes              # remove the stack, keep ECK
+bash scripts/teardown-logging.sh --yes --remove-eck # also remove the operator and CRDs
+```
+
+`--remove-eck` refuses while any Elastic resource exists outside `logging`.
+Filebeat's registry stays on each node at
+`/var/lib/logging/filebeat/filebeat-data`. Problems are in
+[troubleshooting](./troubleshooting.md); the full record is the
+[ECK logging devlog](./devlog/2026-11-14-elk-logging.md).
+
 ## Back up and restore data
 
 Issue #40 part 1 added scripts that back up and restore the Helm-owned
