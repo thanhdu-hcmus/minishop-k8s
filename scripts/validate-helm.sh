@@ -110,6 +110,16 @@ for seed in false true; do
   expect_count "backend peers" 2 '^              app.kubernetes.io/component: minishop-backend$' "$rendered_data"
   expect_count "seed peers (seed=$seed)" $((2 * (peers - 1))) \
     '^              app.kubernetes.io/component: seed$' "$rendered_data"
+  # Every peer (backend and seed) carries the full MiniShop label set.
+  expect_count "peer name=minishop labels (seed=$seed)" $((2 * peers)) \
+    '^              app.kubernetes.io/name: minishop$' "$rendered_data"
+  expect_count "peer part-of=minishop labels (seed=$seed)" $((2 * peers)) \
+    '^              app.kubernetes.io/part-of: minishop$' "$rendered_data"
+  # One `from` rule per policy and no other list item at rule level, so an
+  # empty (allow-all) ingress rule fails.
+  expect_count "ingress from rules" 2 '^    - from:$' "$rendered_data"
+  expect_count "Ingress policy types" 2 '^    - Ingress$' "$rendered_data"
+  expect_count "rule-level list items (2 policyTypes + 1 rule per policy)" 6 '^    - ' "$rendered_data"
 done
 
 printf '%s\n' 'Helm defaults, dev, prod, and seed values lint, render, and pass schema validation.'

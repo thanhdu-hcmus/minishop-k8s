@@ -29,7 +29,8 @@ Redis Pods in `data`. Status is proposed; the owner accepts it on merge.
   removes them.
 - **Ingress only from the backend in `webapp`.** TCP 5432 / 6379 from one peer
   entry that combines `namespaceSelector kubernetes.io/metadata.name=webapp`
-  and `podSelector component=minishop-backend, name=minishop`, so both must
+  and `podSelector component=minishop-backend, name=minishop,
+  part-of=minishop` (the backend Pod template's full label set), so both must
   match. A second peer for the seed Job (`component=seed, name=minishop,
   part-of=minishop`) renders only while `seed.enabled` is true.
 - **Egress denied.** `policyTypes` lists `Egress` with no rules. This deviates

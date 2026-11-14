@@ -372,8 +372,9 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   SYNs from any peer that is not a Pod in `webapp` with the backend labels
   (or the seed Job). A timeout, not a refusal, is the sign of a policy drop;
   the same labels in another namespace are also denied. **Fix:** run the
-  client in `webapp` with labels `app.kubernetes.io/component=minishop-backend`
-  and `app.kubernetes.io/name=minishop` only if it really is the backend;
+  client in `webapp` with labels `app.kubernetes.io/component=minishop-backend`,
+  `app.kubernetes.io/name=minishop` and `app.kubernetes.io/part-of=minishop`
+  only if it really is the backend;
   otherwise add an explicit peer to `charts/minishop/templates/networkpolicy.yaml`.
   For one-off data work, use `kubectl exec` into the data Pod, as the backup
   and rotation scripts do.

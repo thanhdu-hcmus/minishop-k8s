@@ -140,6 +140,7 @@ inside the Pod's network namespace, which NetworkPolicy does not filter.
     matchLabels:
       app.kubernetes.io/component: minishop-backend
       app.kubernetes.io/name: minishop
+      app.kubernetes.io/part-of: minishop
 {{- if .Values.seed.enabled }}
 - namespaceSelector:
     matchLabels:
