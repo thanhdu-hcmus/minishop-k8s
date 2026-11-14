@@ -54,6 +54,14 @@ script exercised frontend-to-backend-to-data connectivity. The clean denied-path
 probe still reached the backend under the active `kindnet` CNI; policy
 enforcement therefore remains unverified on this cluster.
 
+> **Update (Issue #40, 2026-11-14):** the "does not enforce" statements above
+> are superseded. A read-only check on kind-learn found kindnet
+> `v20250512-df8de77b` running its `kube-network-policies` controller on every
+> node; backend-to-legacy-`redis-0` and backend-to-backend probes time out
+> while backend-to-data probes on the same ports connect, so these policies are
+> enforced. The original 2026-09 text is kept as recorded. See
+> [ADR 0016](0016-data-tier-network-policy.md).
+
 ## Related Docs
 - [Application network boundary devlog](../devlog/2026-09-27-application-network-boundary.md)
 - [Runtime data foundation](0004-runtime-data-foundation.md)
