@@ -378,9 +378,13 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   otherwise add an explicit peer to `charts/minishop/templates/networkpolicy.yaml`.
   For one-off data work, use `kubectl exec` into the data Pod, as the backup
   and rotation scripts do.
-- Logging stack (Issue #59, [ADR 0017](./decisions/0017-eck-logging-stack.md);
-  details in the [ECK logging record](./devlog/2026-11-14-elk-logging.md)).
-  Grafana stays the metrics stack ([ADR 0007](./decisions/0007-platform-observability.md)).
+
+### Logging Stack
+
+Issue #59, [ADR 0017](./decisions/0017-eck-logging-stack.md); details in the
+[ECK logging record](./devlog/2026-11-14-elk-logging.md). Grafana stays the
+metrics stack ([ADR 0007](./decisions/0007-platform-observability.md)).
+
 - **Symptom:** a quiet container's lines never appear in Elasticsearch;
   Filebeat logs `files need to be at least 1024 in size`. **Cause:**
   fingerprint file identity waits for 1024 bytes by default. **Fix:**

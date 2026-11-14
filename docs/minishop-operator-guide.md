@@ -500,7 +500,9 @@ bash scripts/teardown-logging.sh --yes              # remove the stack, keep ECK
 bash scripts/teardown-logging.sh --yes --remove-eck # also remove the operator and CRDs
 ```
 
-`--remove-eck` refuses while any Elastic resource exists outside `logging`.
+`--remove-eck` refuses while any resource of any `*.k8s.elastic.co` CRD
+exists outside `logging`, and the script stops before changing anything if
+it cannot list the CRDs or their resources.
 Filebeat's registry stays on each node at
 `/var/lib/logging/filebeat/filebeat-data`. Problems are in
 [troubleshooting](./troubleshooting.md); the full record is the

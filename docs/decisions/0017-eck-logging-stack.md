@@ -194,6 +194,14 @@ it in a Pod that already holds every log it could read.
   `vm.max_map_count` of at least 262144 on the node; kind nodes inherit it
   from the WSL kernel today. A host without it fails Elasticsearch's
   bootstrap checks.
+- **Every namespace's output is collected.** Filebeat ships the stdout and
+  stderr of every container on every node, not only MiniShop's: `data`
+  (PostgreSQL, Redis, the CNPG Pods), `kube-system` (API server, etcd,
+  controllers), `monitoring`, `ingress-nginx` and the rest. Each line stays
+  searchable for about 4 days by anyone who can log in as `elastic`. Anything
+  a workload prints, including a credential or personal data written to a
+  log by mistake, is copied into Elasticsearch; keep secrets out of logs, and
+  a log-level change in any workload changes what is stored.
 - **Filebeat registry on nodes.** The hostPath registry survives
   `teardown-logging.sh`; a later deploy resumes from it instead of
   re-reading old files.

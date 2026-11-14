@@ -228,6 +228,65 @@ repository root:
 Rollback: `bash scripts/teardown-logging.sh --yes` (add `--remove-eck` to
 remove ECK). MiniShop is not touched either way.
 
+## Review fixes (one pass: 0 Blockers, 4 Should-fix, nits)
+Backup of the pre-review branch: `backup/59-pre-review` at `07059cf`. The
+branch moved to a Windows-git worktree; commits from here on were made with
+Windows git (`core.autocrlf=false`, LF checked with `git ls-files --eol`).
+- **S1, teardown guard.** `--remove-eck` checked foreign Elastic resources
+  only when exactly ten ECK CRDs were Established, so a partial install
+  skipped the guard and the CRD delete would remove every Elastic resource
+  in the cluster. `teardown-logging.sh` now lists every `*.k8s.elastic.co`
+  CRD and each one's resources directly, refuses while any resource is
+  outside `logging`, and stops before changing anything if a listing fails;
+  the dry run uses the same listing. New `scripts/test-teardown-logging.sh`
+  (stubbed kubectl, curl and sha256sum): 8/8 cases pass. Run against the
+  pre-review script from the backup branch, all 8 fail; with nine CRDs and a
+  resource in `data` it issued 5 delete calls.
+- **S2, operator scope.** `deploy-eck.sh` sets `namespaces: [logging]` in
+  the operator's `eck.yaml` (exact-match edit next to the digest rewrite, in
+  `logging_patch_operator`) and checks the applied ConfigMap and the
+  operator's `Operator configured to manage multiple namespaces` log line.
+  Key confirmed at the v3.2.0 tag: `namespaces` in
+  `docs/reference/eck-configuration-flags.md` ("Namespaces in which this
+  operator should manage resources"), `NamespacesFlag = "namespaces"` in
+  `pkg/controller/common/operator/flags.go`, the chart's
+  `namespaces: [{{ join "," . }}]`, and `cmd/manager/main.go` adding the
+  operator namespace and limiting the cache to these namespaces. RBAC is
+  unchanged; ADR 0017 now names the ClusterRole's reach (all Secrets,
+  including `minishop-data-credentials`, `minishop-app-credentials` and the
+  `monitoring` Secrets, from a names-only listing; every
+  `validatingwebhookconfiguration`) and keeps the namespaced Helm install as
+  an owner option.
+- **S3, Filebeat API egress.** The 6443 rule now has `ipBlock`
+  `172.18.0.0/16` (`docker network inspect kind`, read-only). The same value
+  is `LOGGING_API_CIDR`; `deploy-logging.sh` and `validate-logging.sh` fail if
+  the API endpoint is outside it (kind-learn's `172.18.0.3` is inside, checked
+  read-only).
+- **S4, upstream facts.** Re-checked and marked "verified 2026-11-14"; ECK
+  3.2.0's stack range corrected to "7.17+, 8+, 9+" and ECK 3.5.0's sample
+  version to 9.4.3. EOL dates stay marked as not re-checked.
+- **Nits.** N1 folded the doc-writer's fact-marking commit into the docs
+  commit; N2 made the troubleshooting group a sub-heading; N3 rewrote the
+  6443 entry as a real symptom; N4 prints `--kubeconfig` and `--context` in
+  the Kibana hint; N5 states in ADR 0017 that every namespace's output is
+  stored and searchable; N7 adds `warn` and `audit` at `baseline` on the
+  `logging` namespace.
+- **Validator.** `validate-logging-manifests.sh` now also checks the patched
+  `operator.yaml` (11 resources, strict) and asserts namespaces exactly
+  `[logging]` and the Filebeat 6443 rule exactly TCP to the CIDR. A first
+  version compared the patched value with its own constant, so widening the
+  constant was missed; it now compares with the logging namespace. Seeded
+  mutations caught: ipBlock removed, widened to `0.0.0.0/0`, namespaces
+  widened, library CIDR changed, an extra port 443 on the rule.
+- **Re-verification.** ShellCheck v0.10.0 clean on all eight logging scripts;
+  `bash -n`, yamllint, LF clean; `validate-kustomize.sh` and
+  `validate-helm.sh` pass. `test-logging.sh` run 8 on the final scripts and
+  manifests: 507 s, `All logging tests passed.`, 11668 MiB available before
+  and 11822 MiB after, cluster deleted; deploy-eck.sh's new namespace checks
+  passed; test line searchable after 70 s; API endpoint inside the ipBlock;
+  every policy path as before; usage 2906 MiB / 277m CPU (Kibana 1052 MiB of
+  1536Mi).
+
 ## Decisions
 - [ADR 0017: ECK-managed logging stack](../decisions/0017-eck-logging-stack.md)
   (proposed).
@@ -236,8 +295,13 @@ remove ECK). MiniShop is not touched either way.
 - One Elasticsearch node, no replica, no backup: losing the volume or the
   `Elasticsearch` resource loses the logs.
 - local-path does not enforce the 10Gi request; ILM is the bound.
-- The ECK operator has cluster-wide RBAC (Secrets and workloads in every
-  namespace); a namespace-scoped install is the alternative in ADR 0017.
+- The ECK operator keeps cluster-wide RBAC (Secrets, workloads and webhook
+  configurations everywhere); `namespaces: [logging]` narrows only what it
+  watches and caches. A namespace-scoped install is the alternative in
+  ADR 0017.
+- Filebeat stores every namespace's container output, including `data` and
+  `kube-system`, for about 4 days.
+- The Filebeat API ipBlock is tied to the kind Docker network subnet.
 - ECK 3.2.0 is three minors behind; it is pinned to match Kubernetes 1.30.
 - Filebeat's registry stays on each node after teardown.
 - The CI kubeconform step skips the ECK resources (`-ignore-missing-schemas`);
