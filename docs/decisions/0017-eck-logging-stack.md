@@ -105,8 +105,12 @@ the deploy separately.
   operator (namespace `elastic-system`, `control-plane=elastic-operator`),
   Kibana and Filebeat, and on 9300 from its own nodes; Elasticsearch egress
   on 9300 to its own nodes; Kibana and Filebeat egress to Elasticsearch 9200;
-  Filebeat egress to TCP 6443 (API server, by port only because the endpoint
-  is a kind node IP that can change). Not allowed, by design: Kibana ingress
+  Filebeat egress to TCP 6443 on `ipBlock` `172.18.0.0/16`, the kind Docker
+  network (`docker network inspect kind`, read 2026-11-14). The API endpoint
+  is a kind node IP that can change when nodes restart but stays in that
+  network; `deploy-logging.sh` and `validate-logging.sh` fail if the
+  endpoint is outside the CIDR, which must then be updated together with
+  `LOGGING_API_CIDR` in `scripts/logging-lib.sh`. Not allowed, by design: Kibana ingress
   (port-forward is not filtered by NetworkPolicy), the operator to Kibana
   (ECK calls only Elasticsearch, per Elastic's ECK network-policy guide), and
   any internet egress (telemetry and newsfeed are off). The API server

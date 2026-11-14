@@ -49,6 +49,8 @@ logging_eck_installed || die "ECK CRDs are missing; run scripts/deploy-eck.sh fi
 [[ "$(logging_kubectl -n "$ECK_NAMESPACE" get statefulset elastic-operator \
   -o 'jsonpath={.status.readyReplicas}' 2>/dev/null)" == 1 ]] ||
   die "the ECK operator in $ECK_NAMESPACE is not ready; run scripts/deploy-eck.sh"
+logging_check_api_cidr ||
+  die "Filebeat could not reach the API server through its NetworkPolicy; nothing was applied"
 
 printf 'Applying the logging namespace, NetworkPolicies, Elasticsearch and Kibana\n'
 logging_kubectl apply -f "$LOGGING_MANIFESTS/namespace.yaml"

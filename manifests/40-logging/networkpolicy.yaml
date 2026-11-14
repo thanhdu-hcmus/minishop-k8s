@@ -146,9 +146,14 @@ spec:
           port: 9200
     # Kubernetes API for autodiscover. kindnet evaluates policy after the
     # Service address is translated, so the destination is the API server
-    # endpoint (a kind node IP that can change when nodes restart). Port
-    # 6443 is matched without an address for that reason; only the API
-    # server listens on it here.
-    - ports:
+    # endpoint: a kind node IP, which can change when nodes restart but stays
+    # in the kind Docker network. This CIDR must match
+    # `docker network inspect kind` (172.18.0.0/16 on 2026-11-14) and
+    # LOGGING_API_CIDR in scripts/logging-lib.sh; deploy-logging.sh and
+    # validate-logging.sh check that the API endpoint is inside it.
+    - to:
+        - ipBlock:
+            cidr: 172.18.0.0/16
+      ports:
         - protocol: TCP
           port: 6443

@@ -43,6 +43,9 @@ readonly LOGGING_KIBANA_NAME=logging
 readonly LOGGING_BEAT_NAME=filebeat
 readonly LOGGING_ILM_POLICY=minishop-logs
 readonly LOGGING_ES_HOST="${LOGGING_ES_NAME}-es-http.${LOGGING_NAMESPACE}.svc"
+# Filebeat's API-server egress ipBlock in networkpolicy.yaml: the kind Docker
+# network (`docker network inspect kind`, 172.18.0.0/16 on 2026-11-14).
+readonly LOGGING_API_CIDR=172.18.0.0/16
 
 # Target cluster. Scripts accept --context and --kubeconfig to change these;
 # the defaults are the repository's kind-learn settings (AGENTS.md).
@@ -150,6 +153,37 @@ logging_es_api() {
   }
   logging_kubectl -n "$LOGGING_NAMESPACE" exec -i "$pod" -c elasticsearch -- \
     bash -c "$LOGGING_ES_CURL" es-api "$1" "$2" "$LOGGING_ES_HOST"
+}
+
+# logging_ip_in_cidr IP CIDR: 0 when the IPv4 address is inside the IPv4 CIDR.
+logging_ip_in_cidr() {
+  local ip=$1 net=${2%/*} bits=${2#*/} a b c d n m mask
+  local octet='(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])'
+  [[ "$ip" =~ ^$octet\.$octet\.$octet\.$octet$ && "$net" =~ ^$octet\.$octet\.$octet\.$octet$ ]] || return 1
+  [[ "$bits" =~ ^([0-9]|[12][0-9]|3[0-2])$ ]] || return 1
+  IFS=. read -r a b c d <<<"$ip"
+  n=$(((a << 24) | (b << 16) | (c << 8) | d))
+  IFS=. read -r a b c d <<<"$net"
+  m=$(((a << 24) | (b << 16) | (c << 8) | d))
+  mask=$(((0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF))
+  (((n & mask) == (m & mask)))
+}
+
+# logging_check_api_cidr: every API server endpoint must be inside
+# LOGGING_API_CIDR, or Filebeat's autodiscover is silently blocked.
+logging_check_api_cidr() {
+  local ips ip
+  ips=$(logging_kubectl -n default get endpoints kubernetes \
+    -o 'jsonpath={range .subsets[*].addresses[*]}{.ip}{"\n"}{end}') || return 1
+  [[ -n "$ips" ]] || return 1
+  for ip in $ips; do
+    if ! logging_ip_in_cidr "$ip" "$LOGGING_API_CIDR"; then
+      printf 'API server %s is outside %s, the Filebeat egress ipBlock in %s.\n' \
+        "$ip" "$LOGGING_API_CIDR" "manifests/40-logging/networkpolicy.yaml" >&2
+      printf '%s\n' 'Check `docker network inspect kind` and update the ipBlock and LOGGING_API_CIDR together.' >&2
+      return 1
+    fi
+  done
 }
 
 # logging_resource_field KIND NAME JSONPATH: a field of a resource in the

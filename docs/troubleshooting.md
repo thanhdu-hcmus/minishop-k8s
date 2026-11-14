@@ -401,11 +401,17 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   ECK is still creating Filebeat's Elasticsearch user (reported by the
   implementer; not in the devlog's run notes). **Fix:** none; it
   retries. Investigate if the 401s persist after the Beat is green.
-- **Symptom:** Filebeat's egress rule to the API server allows TCP 6443 to any
-  address. **Cause:** deliberate. kindnet evaluates policy after Service
-  translation, so the destination is a kind node IP, which can change after a
-  restart. **Fix:** do not pin an `ipBlock`; only the API server listens on
-  6443 here.
+- **Symptom:** new log events have no `kubernetes.*` fields, or a Pod's
+  logs stop arriving after the kind cluster or Docker network was recreated;
+  Filebeat logs connection timeouts to the API server, and
+  `deploy-logging.sh` or `validate-logging.sh` fails with `API server ... is
+  outside 172.18.0.0/16`. **Cause:** Filebeat's API-server egress allows TCP
+  6443 only to the kind Docker network (kindnet evaluates policy after
+  Service translation, so the destination is a kind node IP), and the new
+  network uses another subnet. **Fix:** read the subnet with `docker network
+  inspect kind`, then update the `ipBlock` in
+  `manifests/40-logging/networkpolicy.yaml` and `LOGGING_API_CIDR` in
+  `scripts/logging-lib.sh` together and redeploy.
 - **Symptom:** a connection to or from a `logging` Pod hangs and times out
   instead of being refused. **Cause:** `default-deny-all` in `logging`;
   kindnet enforces NetworkPolicy and drops the packets

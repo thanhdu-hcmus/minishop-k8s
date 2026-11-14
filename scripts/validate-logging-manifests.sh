@@ -12,7 +12,8 @@
 #     and its settings are checked.
 #   - Policy checks: one Elastic Stack version everywhere, every image pinned
 #     by digest, CPU and memory requests and limits on every container, the
-#     ILM policy deletes after 3d, and Filebeat links to that policy.
+#     ILM policy deletes after 3d, Filebeat links to that policy, and
+#     Filebeat's API-server egress is TCP 6443 to LOGGING_API_CIDR only.
 #
 # Usage:
 #   bash scripts/validate-logging-manifests.sh
@@ -102,16 +103,17 @@ logging_download operator.yaml "$ECK_OPERATOR_SHA256" "$work/eck/operator.yaml"
 logging_patch_operator "$work/eck/operator.yaml"
 docker run --rm --volume "$work/eck:/eck:ro" "$KUBECONFORM_IMAGE" -summary -strict /eck/operator.yaml
 python3 -I - "$work/eck/operator.yaml" "$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST" \
-  "$ECK_MANAGED_NAMESPACES" <<'PY'
+  "$LOGGING_NAMESPACE" <<'PY'
 import sys
 
 import yaml
 
-path, image, namespaces = sys.argv[1:]
+path, image, namespace = sys.argv[1:]
 docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
 config = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "elastic-operator")
 settings = yaml.safe_load(config["data"]["eck.yaml"])
-wanted = yaml.safe_load(namespaces)
+# Exactly the logging namespace (ECK adds its own namespace itself).
+wanted = [namespace]
 if settings.get("namespaces") != wanted:
     sys.exit(f"FAIL: operator eck.yaml namespaces is {settings.get('namespaces')!r}, not {wanted!r}")
 operator = next(d for d in docs if d["kind"] == "StatefulSet")
@@ -121,7 +123,7 @@ if images != [image]:
 print(f"Patched operator.yaml: namespaces {wanted}, image pinned by digest.")
 PY
 
-python3 -I - "$LOGGING_MANIFESTS" "$LOGGING_ILM_POLICY" <<'PY'
+python3 -I - "$LOGGING_MANIFESTS" "$LOGGING_ILM_POLICY" "$LOGGING_API_CIDR" <<'PY'
 import glob
 import json
 import os
@@ -130,7 +132,7 @@ import sys
 
 import yaml
 
-directory, policy_name = sys.argv[1], sys.argv[2]
+directory, policy_name, api_cidr = sys.argv[1:4]
 errors = []
 docs = []
 for path in sorted(glob.glob(os.path.join(directory, "*.yaml"))):
@@ -180,6 +182,20 @@ for name, doc in docs:
 if len(set(stack.values())) != 1:
     errors.append(f"Elastic Stack versions differ: {stack}")
 
+# Filebeat's API-server egress: TCP 6443 only, only to the kind network.
+filebeat_policy = next(
+    (d for _, d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "filebeat"), None)
+api_rules = [r for r in (filebeat_policy or {}).get("spec", {}).get("egress", [])
+             if any(p.get("port") == 6443 for p in r.get("ports", []))]
+if len(api_rules) != 1:
+    errors.append(f"networkpolicy.yaml: expected one Filebeat egress rule for 6443, found {len(api_rules)}")
+else:
+    peers = api_rules[0].get("to", [])
+    ports = api_rules[0].get("ports", [])
+    if peers != [{"ipBlock": {"cidr": api_cidr}}] or ports != [{"protocol": "TCP", "port": 6443}]:
+        errors.append(f"networkpolicy.yaml: Filebeat 6443 egress must be TCP to ipBlock {api_cidr} only, "
+                      f"got to={peers} ports={ports}")
+
 with open(os.path.join(directory, "ilm-policy.json"), encoding="utf-8") as handle:
     phases = json.load(handle)["policy"]["phases"]
 if phases.get("delete", {}).get("min_age") != "3d" or "delete" not in phases["delete"].get("actions", {}):
@@ -188,7 +204,8 @@ if phases.get("delete", {}).get("min_age") != "3d" or "delete" not in phases["de
 if errors:
     print("\n".join("FAIL: " + e for e in errors), file=sys.stderr)
     sys.exit(1)
-print(f"Policy checks passed: stack {next(iter(stack.values()))}, digests, resources, ILM.")
+print(f"Policy checks passed: stack {next(iter(stack.values()))}, digests, resources, ILM, "
+      f"Filebeat API egress to {api_cidr}.")
 PY
 
 printf '%s\n' 'manifests/40-logging validates.'

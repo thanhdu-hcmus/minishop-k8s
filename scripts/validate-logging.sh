@@ -72,6 +72,9 @@ policy=$(logging_es_api GET "/_ilm/policy/$LOGGING_ILM_POLICY?filter_path=*.poli
 [[ "$policy" == *'"min_age":"3d"'* ]] || die "ILM policy $LOGGING_ILM_POLICY has no 3d delete phase"
 pass "ILM policy $LOGGING_ILM_POLICY deletes indices 3d after rollover"
 
+logging_check_api_cidr || die "Filebeat's API-server egress ipBlock does not cover the API endpoint"
+pass "API server endpoint is inside Filebeat's egress ipBlock $LOGGING_API_CIDR"
+
 # --- Test line from a MiniShop backend Pod --------------------------------------
 backend=$(logging_kubectl -n "$APP_NAMESPACE" get pods -l "$BACKEND_SELECTOR" \
   -o 'jsonpath={range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}')
