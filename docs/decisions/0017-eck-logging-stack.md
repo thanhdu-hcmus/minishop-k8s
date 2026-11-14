@@ -50,8 +50,9 @@ the deploy separately.
   - Bump ECK only together with a kind node image of 1.31 or later.
 - **Pinning.** `scripts/logging-lib.sh` pins the SHA-256 of both download-host
   manifests (`crds.yaml` `2ba3cb0d…435384ea`, `operator.yaml`
-  `74c5bd9e…fc90809`); `deploy-eck.sh` refuses a mismatch and rewrites the
-  operator image to its multi-arch index digest. The stack resources set
+  `74c5bd9e…fc90809`); `deploy-eck.sh` refuses a mismatch, rewrites the
+  operator image to its multi-arch index digest, and sets the operator's
+  managed namespaces to `logging` (see Consequences). The stack resources set
   `image:` to `9.4.9@sha256:…` digests next to `version: 9.4.9`.
 - **Layout.** Raw manifests in `manifests/40-logging/`, the next layer after
   `30-platform`: `namespace.yaml`, `networkpolicy.yaml`, `elasticsearch.yaml`,
@@ -115,12 +116,15 @@ the deploy separately.
   owner approves, at deploy time:
   - ten cluster-wide ECK CRDs and a `ValidatingWebhookConfiguration`
     (`failurePolicy: Ignore`);
-  - the operator's ClusterRole: create, update and delete on Pods, Secrets,
-    ConfigMaps, Services, PVCs, Deployments, StatefulSets, DaemonSets and
-    PDBs in every namespace, read on nodes and StorageClasses, and the
-    webhook configuration. ECK also adds aggregated `elastic-operator-view`
-    and `-edit` roles, which extend the built-in view, edit and admin roles
-    to Elastic resources;
+  - the operator's ClusterRole: get, list, watch, create, update, patch and
+    delete on Pods, Secrets, ConfigMaps, Services, PVCs, Events, Deployments,
+    StatefulSets, DaemonSets and PDBs in every namespace; read on nodes and
+    StorageClasses; and create, update, patch and delete on **all**
+    `validatingwebhookconfigurations` in the cluster, with no
+    `resourceNames`, so it could change or remove other webhooks such as
+    ingress-nginx's. ECK also adds aggregated `elastic-operator-view` and
+    `-edit` roles, which extend the built-in view, edit and admin roles to
+    Elastic resources;
   - Filebeat's ClusterRole `logging-filebeat`: get, list and watch on Pods,
     Namespaces and Nodes, no Secrets;
   - Filebeat running as root (UID 0, no capabilities, no privilege
@@ -149,13 +153,34 @@ it in a Pod that already holds every log it could read.
   directory on a disk with about 943 GB free, so Elasticsearch's disk
   watermarks only act near the host's limit. The ILM delete phase is the
   real bound.
-- **Cluster-wide operator RBAC.** The all-in-one operator can read and change
-  Secrets and workloads in every namespace, including MiniShop's. A narrower
-  alternative is ECK's Helm chart with `createClusterScopedResources: false`
-  and `managedNamespaces: [logging]` (namespaced Roles only, webhook and node
-  label features off, CRDs installed separately). It was not chosen for the
-  first install because it departs from Elastic's documented all-in-one path;
-  the owner may prefer it.
+- **Cluster-wide operator RBAC (blast radius).** The all-in-one operator's
+  ServiceAccount `elastic-system/elastic-operator` can read and write every
+  Secret in the cluster (names from a read-only listing on 2026-11-14): the
+  data credentials `minishop-data-credentials` and the CNPG Secrets in
+  `data`, `minishop-app-credentials` in `webapp`, the `monitoring` Secrets
+  (`monitoring-grafana` with the Grafana admin login, Alertmanager and
+  Prometheus configuration and TLS assets), and any future one. Without the
+  middle ground below it would also cache all of them in memory. It can
+  change or delete workloads and webhook configurations anywhere. A
+  compromised or misbehaving operator could act on all of them.
+- **Middle ground taken: managed namespaces.** `deploy-eck.sh` sets
+  `namespaces: [logging]` in the operator's `eck.yaml` (the `namespaces`
+  flag in ECK 3.2.0's configuration reference; the chart's
+  `managedNamespaces` renders the same key). ECK then reconciles, watches and
+  caches namespaced objects only in `logging` and its own `elastic-system`
+  (it adds that one itself; `cmd/manager/main.go` at v3.2.0), so it no
+  longer lists or caches Secrets of other namespaces. `deploy-eck.sh`
+  checks the applied ConfigMap and the operator's start-up log line.
+  This narrows what the operator does, **not** what its RBAC allows: the
+  ClusterRole and binding are unchanged, so a compromised operator token
+  still reaches every namespace.
+- **Owner option: namespaced RBAC.** ECK's Helm chart with
+  `createClusterScopedResources: false` and `managedNamespaces: [logging]`
+  installs namespaced Roles only (webhook and node-label features off, CRDs
+  installed separately). Elastic documents this restricted install as well
+  as the all-in-one one; the all-in-one manifests were kept here so the
+  install matches `scripts/deploy-ingress-nginx.sh` and needs no Helm
+  values. The owner may prefer the restricted install.
 - **Licensing.** ECK runs under the Elastic Basic license by default (free;
   ECK itself is under the Elastic License 2.0). Basic covers what this uses:
   security, TLS, ILM, Kibana and Filebeat. No trial or Enterprise license is

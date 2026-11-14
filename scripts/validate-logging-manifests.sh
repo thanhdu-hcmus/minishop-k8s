@@ -7,6 +7,9 @@
 #     against JSON schemas built from the pinned, checksum-verified ECK CRDs.
 #     Unknown fields fail, except where the CRD preserves them (podTemplate,
 #     config).
+#   - The ECK operator.yaml as deploy-eck.sh applies it (checksum-verified,
+#     image pinned by digest, namespaces set to logging) passes kubeconform,
+#     and its settings are checked.
 #   - Policy checks: one Elastic Stack version everywhere, every image pinned
 #     by digest, CPU and memory requests and limits on every container, the
 #     ILM policy deletes after 3d, and Filebeat links to that policy.
@@ -91,6 +94,32 @@ docker run --rm \
   -schema-location default \
   -schema-location '/schemas/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json' \
   "${manifests[@]}"
+
+# The operator manifest exactly as deploy-eck.sh applies it: checksum-verified,
+# then patched (image digest, managed namespaces).
+mkdir "$work/eck"
+logging_download operator.yaml "$ECK_OPERATOR_SHA256" "$work/eck/operator.yaml"
+logging_patch_operator "$work/eck/operator.yaml"
+docker run --rm --volume "$work/eck:/eck:ro" "$KUBECONFORM_IMAGE" -summary -strict /eck/operator.yaml
+python3 -I - "$work/eck/operator.yaml" "$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST" \
+  "$ECK_MANAGED_NAMESPACES" <<'PY'
+import sys
+
+import yaml
+
+path, image, namespaces = sys.argv[1:]
+docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
+config = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "elastic-operator")
+settings = yaml.safe_load(config["data"]["eck.yaml"])
+wanted = yaml.safe_load(namespaces)
+if settings.get("namespaces") != wanted:
+    sys.exit(f"FAIL: operator eck.yaml namespaces is {settings.get('namespaces')!r}, not {wanted!r}")
+operator = next(d for d in docs if d["kind"] == "StatefulSet")
+images = [c["image"] for c in operator["spec"]["template"]["spec"]["containers"]]
+if images != [image]:
+    sys.exit(f"FAIL: operator images {images!r}, not [{image!r}]")
+print(f"Patched operator.yaml: namespaces {wanted}, image pinned by digest.")
+PY
 
 python3 -I - "$LOGGING_MANIFESTS" "$LOGGING_ILM_POLICY" <<'PY'
 import glob

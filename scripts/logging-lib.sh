@@ -30,6 +30,11 @@ readonly ECK_OPERATOR_IMAGE="docker.elastic.co/eck/eck-operator:${ECK_VERSION}"
 readonly ECK_OPERATOR_DIGEST=sha256:6f6e3fa64f64d79279e2ceccdb0ab917ecc9c079446a633976387621eb301869
 readonly ECK_NAMESPACE=elastic-system
 readonly ECK_CRD_COUNT=10
+# The operator reconciles, watches and caches only these namespaces; ECK
+# 3.2.0 adds its own namespace itself (cmd/manager/main.go). This narrows
+# what the operator caches and acts on, not its RBAC: the ClusterRole still
+# covers every namespace (ADR 0017).
+readonly ECK_MANAGED_NAMESPACES="[logging]"
 
 # Names used by manifests/40-logging. Keep them in step with the manifests.
 readonly LOGGING_NAMESPACE=logging
@@ -75,6 +80,33 @@ logging_download() {
     --output "$file" "$ECK_DOWNLOAD_URL/$name" || die "could not download ECK $ECK_VERSION $name"
   printf '%s  %s\n' "$sha" "$file" | sha256sum --check --status ||
     die "ECK $ECK_VERSION $name checksum mismatch; refusing to use it"
+}
+
+# logging_patch_operator FILE: in a checksum-verified operator.yaml, pin the
+# operator image by digest and set the managed namespaces in the operator's
+# eck.yaml ConfigMap. The checksum fixed the file, so each edit must match
+# exactly once; anything else stops.
+logging_patch_operator() {
+  local file=$1 image_line anchor ns_line
+  image_line="image: \"$ECK_OPERATOR_IMAGE\""
+  [[ "$(grep -cF -- "$image_line" "$file")" -eq 1 ]] ||
+    die "expected one '$image_line' line in operator.yaml"
+  [[ "$(grep -c 'image:' "$file")" -eq 1 ]] ||
+    die "operator.yaml has an image line this script does not pin"
+  sed -i "s|$image_line|image: \"$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST\"|" "$file"
+  grep -qF -- "$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST" "$file" ||
+    die "could not pin the operator image digest"
+
+  anchor="    operator-namespace: $ECK_NAMESPACE"
+  ns_line="    namespaces: $ECK_MANAGED_NAMESPACES"
+  [[ "$(grep -cxF -- "$anchor" "$file")" -eq 1 ]] ||
+    die "expected one '$anchor' line in operator.yaml"
+  if grep -qE '^ +namespaces:' "$file"; then
+    die "operator.yaml already sets namespaces"
+  fi
+  sed -i "s|^$anchor\$|&\n$ns_line|" "$file"
+  [[ "$(grep -cxF -- "$ns_line" "$file")" -eq 1 ]] ||
+    die "could not set the operator's managed namespaces"
 }
 
 # logging_eck_installed: 0 when all ECK CRDs are established.

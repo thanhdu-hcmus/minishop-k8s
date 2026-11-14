@@ -10,8 +10,11 @@
 #
 # Both manifests come from Elastic's download host and are refused unless
 # their SHA-256 matches the pinned value. The operator image tag is then
-# replaced by the same tag with its pinned digest. Re-running is safe: the
-# CRDs use server-side apply and the operator manifest is applied as is.
+# replaced by the same tag with its pinned digest, and the operator's
+# eck.yaml gets `namespaces: [logging]`, so it watches, caches and reconciles
+# only logging (and elastic-system). That does not narrow its cluster-wide
+# RBAC (ADR 0017). Re-running is safe: the CRDs use server-side apply and the
+# operator manifest is applied as patched.
 
 set -euo pipefail
 
@@ -44,16 +47,9 @@ trap 'rm -rf -- "$work"' EXIT
 logging_download crds.yaml "$ECK_CRDS_SHA256" "$work/crds.yaml"
 logging_download operator.yaml "$ECK_OPERATOR_SHA256" "$work/operator.yaml"
 
-# Pin the operator image by digest. The checksum fixed the file, so exactly
-# one image line with the tag is expected; anything else stops the install.
-image_line="image: \"$ECK_OPERATOR_IMAGE\""
-[[ "$(grep -cF -- "$image_line" "$work/operator.yaml")" -eq 1 ]] ||
-  die "expected one '$image_line' line in operator.yaml"
-[[ "$(grep -c 'image:' "$work/operator.yaml")" -eq 1 ]] ||
-  die "operator.yaml has an image line this script does not pin"
-sed -i "s|$image_line|image: \"$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST\"|" "$work/operator.yaml"
-grep -qF -- "$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST" "$work/operator.yaml" ||
-  die "could not pin the operator image digest"
+# Pin the operator image by digest and limit the namespaces it manages to
+# logging (exact-match edits; see logging_patch_operator).
+logging_patch_operator "$work/operator.yaml"
 
 printf 'Installing ECK %s CRDs in context %s\n' "$ECK_VERSION" "$LOGGING_CONTEXT"
 # The CRDs are too large for client-side apply's last-applied annotation.
@@ -72,5 +68,22 @@ running_image=$(logging_kubectl -n "$ECK_NAMESPACE" get statefulset elastic-oper
   -o 'jsonpath={.spec.template.spec.containers[?(@.name=="manager")].image}')
 [[ "$running_image" == "$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST" ]] ||
   die "the operator runs $running_image, not the pinned digest"
+
+# The applied ConfigMap carries the namespace scope, and the running operator
+# logs it when it starts (it restarts itself if the file changed).
+operator_config=$(logging_kubectl -n "$ECK_NAMESPACE" get configmap elastic-operator \
+  -o 'jsonpath={.data.eck\.yaml}')
+grep -qxF -- "namespaces: $ECK_MANAGED_NAMESPACES" <<<"$operator_config" ||
+  die "the operator ConfigMap does not set namespaces: $ECK_MANAGED_NAMESPACES"
+for attempt in {1..24}; do
+  operator_log=$(logging_kubectl -n "$ECK_NAMESPACE" logs statefulset/elastic-operator 2>/dev/null) ||
+    operator_log=""
+  scope=$(grep 'Operator configured to manage' <<<"$operator_log" | tail -n 1) || scope=""
+  [[ "$scope" == *"\"namespaces\":[\"$LOGGING_NAMESPACE\"]"* ]] && break
+  ((attempt < 24)) || die "the operator did not report managing namespaces $ECK_MANAGED_NAMESPACES within 120s"
+  sleep 5
+done
+printf 'The operator manages namespaces %s (plus %s); its RBAC is still cluster-wide.\n' \
+  "$ECK_MANAGED_NAMESPACES" "$ECK_NAMESPACE"
 
 printf 'ECK %s is ready in context %s.\n' "$ECK_VERSION" "$LOGGING_CONTEXT"

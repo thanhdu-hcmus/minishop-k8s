@@ -428,7 +428,7 @@ node (it is on kind-learn today).
 cluster:
 
 ```bash
-bash scripts/deploy-eck.sh         # CRDs, operator, RBAC, webhook (cluster-wide)
+bash scripts/deploy-eck.sh         # CRDs, RBAC, webhook (cluster-wide); operator manages only logging
 bash scripts/deploy-logging.sh     # namespace, policies, Elasticsearch, ILM, Kibana, Filebeat
 bash scripts/validate-logging.sh   # health, ILM, and a backend test line searchable
 ```
