@@ -1,0 +1,80 @@
+# One-node Elasticsearch managed by ECK (ADR 0017). ECK generates the TLS
+# certificates, the elastic superuser and its Secret logging-es-elastic-user.
+# A single node has no replica: losing its volume loses the logs.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: logging
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  version: 9.4.9
+  # Same version, pinned by multi-arch index digest.
+  # yamllint disable-line rule:line-length
+  image: docker.elastic.co/elasticsearch/elasticsearch:9.4.9@sha256:c8383efdb3af3bd32fad8604989d31db92c41f5d05fb85b52537cbe672dff8c2
+  nodeSets:
+    - name: default
+      count: 1
+      config:
+        # No ml role: machine learning is not used and its native process
+        # would compete with the heap for the 2Gi limit.
+        node.roles: ["master", "data", "ingest"]
+        # The GeoIP downloader calls the internet, which the NetworkPolicy
+        # blocks; nothing here enriches by IP.
+        ingest.geoip.downloader.enabled: false
+      podTemplate:
+        metadata:
+          annotations:
+            # ECK sets co.elastic.logs/module for its own log module. That
+            # module's hint clashes with Filebeat's default_config (duplicate
+            # input IDs, two parsers), so no log is collected. Empty selects
+            # default_config.
+            co.elastic.logs/module: ""
+          labels:
+            app.kubernetes.io/part-of: minishop-logging
+        spec:
+          automountServiceAccountToken: false
+          containers:
+            - name: elasticsearch
+              env:
+                # Heap is half the memory limit; the rest is off-heap and
+                # file-system cache.
+                - name: ES_JAVA_OPTS
+                  value: "-Xms1g -Xmx1g"
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 2Gi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+              volumeMounts:
+                # scripts/logging-lib.sh calls the API from inside this
+                # container with this file, so the password never leaves
+                # the Pod. The container already holds every log it could
+                # read with it.
+                - name: elastic-user
+                  mountPath: /mnt/elastic-user
+                  readOnly: true
+          volumes:
+            - name: elastic-user
+              secret:
+                secretName: logging-es-elastic-user
+                defaultMode: 0440
+                items:
+                  - key: elastic
+                    path: elastic
+      volumeClaimTemplates:
+        - metadata:
+            # ECK mounts the data path from a claim with this name.
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            # No storageClassName: the default class (standard, local-path).
+            # local-path does not enforce the size; the ILM policy bounds
+            # the data (ADR 0017).
+            resources:
+              requests:
+                storage: 10Gi

@@ -1,0 +1,159 @@
+# NetworkPolicies for the logging namespace (ADR 0017). Everything is denied
+# by default; the policies below allow only the paths the stack needs. Rules
+# follow Elastic's ECK network-policy guide, with ECK's own Pod labels.
+# Not needed and not allowed: Kibana ingress (kubectl port-forward enters the
+# Pod's network namespace through the kubelet, which NetworkPolicy does not
+# filter) and the operator to Kibana (ECK calls only Elasticsearch).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elasticsearch
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: elasticsearch
+      elasticsearch.k8s.elastic.co/cluster-name: logging
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # HTTPS API: the ECK operator (health, settings, users), Kibana and
+    # Filebeat. The operator peer needs both selectors to match.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: elastic-system
+          podSelector:
+            matchLabels:
+              control-plane: elastic-operator
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: kibana
+              kibana.k8s.elastic.co/name: logging
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: beat
+              beat.k8s.elastic.co/name: filebeat
+      ports:
+        - protocol: TCP
+          port: 9200
+    # Transport between nodes of this cluster (one node today).
+    - from:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: elasticsearch
+              elasticsearch.k8s.elastic.co/cluster-name: logging
+      ports:
+        - protocol: TCP
+          port: 9300
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: elasticsearch
+              elasticsearch.k8s.elastic.co/cluster-name: logging
+      ports:
+        - protocol: TCP
+          port: 9300
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kibana
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: kibana
+      kibana.k8s.elastic.co/name: logging
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: elasticsearch
+              elasticsearch.k8s.elastic.co/cluster-name: logging
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: filebeat
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: beat
+      beat.k8s.elastic.co/name: filebeat
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: elasticsearch
+              elasticsearch.k8s.elastic.co/cluster-name: logging
+      ports:
+        - protocol: TCP
+          port: 9200
+    # Kubernetes API for autodiscover. kindnet evaluates policy after the
+    # Service address is translated, so the destination is the API server
+    # endpoint: a kind node IP, which can change when nodes restart but stays
+    # in the kind Docker network. This CIDR must match
+    # `docker network inspect kind` (172.18.0.0/16 on 2026-11-14) and
+    # LOGGING_API_CIDR in scripts/logging-lib.sh; deploy-logging.sh and
+    # validate-logging.sh check that the API endpoint is inside it.
+    - to:
+        - ipBlock:
+            cidr: 172.18.0.0/16
+      ports:
+        - protocol: TCP
+          port: 6443

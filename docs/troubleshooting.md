@@ -379,6 +379,66 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   For one-off data work, use `kubectl exec` into the data Pod, as the backup
   and rotation scripts do.
 
+### Logging Stack
+
+Issue #59, [ADR 0017](./decisions/0017-eck-logging-stack.md); details in the
+[ECK logging record](./devlog/2026-11-14-elk-logging.md). Grafana stays the
+metrics stack ([ADR 0007](./decisions/0007-platform-observability.md)).
+
+- **Symptom:** a quiet container's lines never appear in Elasticsearch;
+  Filebeat logs `files need to be at least 1024 in size`. **Cause:**
+  fingerprint file identity waits for 1024 bytes by default. **Fix:**
+  `prospector.scanner.fingerprint.length: 64` in
+  `manifests/40-logging/filebeat.yaml` (already set); do not raise it.
+- **Symptom:** no Elasticsearch or Kibana Pod logs; Filebeat logs `more than
+  one namespace configured accessing 'parsers.0'` or `filestream input with
+  ID ... already exists`. **Cause:** ECK annotates its Pods with
+  `co.elastic.logs/module`, and the module config it produces clashes with
+  `default_config`. **Fix:** keep `co.elastic.logs/module: ""` on both
+  podTemplates.
+- **Symptom:** Elasticsearch health is `yellow` for about a minute after
+  deploy. **Cause:** not recorded; runs 2, 3 and 6 saw it at startup with no
+  yellow index listed a minute later. **Fix:**
+  none needed; deploy and validate accept green or yellow, and it turned
+  green within a minute in the test runs. Investigate only if it stays yellow.
+- **Symptom:** Filebeat logs brief `401` errors right after deploy. **Cause:**
+  ECK is still creating Filebeat's Elasticsearch user (reported by the
+  implementer; not in the devlog's run notes). **Fix:** none; it
+  retries. Investigate if the 401s persist after the Beat is green.
+- **Symptom:** new log events have no `kubernetes.*` fields, or a Pod's
+  logs stop arriving after the kind cluster or Docker network was recreated;
+  Filebeat logs connection timeouts to the API server, and
+  `deploy-logging.sh` or `validate-logging.sh` fails with `API server ... is
+  outside 172.18.0.0/16`. **Cause:** Filebeat's API-server egress allows TCP
+  6443 only to the kind Docker network (kindnet evaluates policy after
+  Service translation, so the destination is a kind node IP), and the new
+  network uses another subnet. **Fix:** read the subnet with `docker network
+  inspect kind`, then update the `ipBlock` in
+  `manifests/40-logging/networkpolicy.yaml` and `LOGGING_API_CIDR` in
+  `scripts/logging-lib.sh` together and redeploy.
+- **Symptom:** a connection to or from a `logging` Pod hangs and times out
+  instead of being refused. **Cause:** `default-deny-all` in `logging`;
+  kindnet enforces NetworkPolicy and drops the packets
+  ([ADR 0016](./decisions/0016-data-tier-network-policy.md)). **Fix:** use
+  only the allowed paths in `manifests/40-logging/networkpolicy.yaml`, or add
+  a specific allow. Kibana is reached by port-forward, which policy does not
+  filter.
+- **Symptom:** Kibana `/api/status` answers `200` without credentials.
+  **Cause:** Kibana 9.4 serves a redacted status anonymously. **Fix:** not a
+  security gap; check auth with `/api/data_views`, which returns `401`.
+- **Symptom:** Elasticsearch fails its bootstrap checks on a new host.
+  **Cause:** `vm.max_map_count` below 262144; kind nodes inherit it from the
+  WSL kernel. **Fix:** raise it on the host before deploying (a host change
+  that needs the owner).
+- **Symptom:** after teardown and a new deploy, old log lines are not
+  re-ingested. **Cause:** Filebeat's registry stays on each node in
+  `/var/lib/logging/filebeat/filebeat-data`. **Fix:** expected; delete that
+  directory on each node only if a full re-read is really wanted.
+- **Symptom:** a newer ECK release will not install or is unsupported.
+  **Cause:** each ECK release supports a range of Kubernetes versions;
+  kind-learn runs 1.30.13 and ECK 3.2.0 is pinned for it. **Fix:** bump ECK
+  only together with a kind node image of 1.31 or later.
+
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
 

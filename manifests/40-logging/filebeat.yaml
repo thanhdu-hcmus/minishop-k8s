@@ -1,0 +1,163 @@
+# Filebeat as an ECK-managed DaemonSet (ADR 0017). It reads every container
+# log on its node, adds Kubernetes metadata through autodiscover, and decodes
+# the MiniShop backend's pino JSON lines. ECK connects it to Elasticsearch
+# with its own user and the cluster CA.
+apiVersion: beat.k8s.elastic.co/v1beta1
+kind: Beat
+metadata:
+  name: filebeat
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  type: filebeat
+  version: 9.4.9
+  # Same version, pinned by multi-arch index digest.
+  # yamllint disable-line rule:line-length
+  image: docker.elastic.co/beats/filebeat:9.4.9@sha256:d093af90dd0f7833b75c4a2b4b43fdbeb4b9fc55903242286befc17cf7a4b037
+  elasticsearchRef:
+    name: logging
+  config:
+    filebeat:
+      autodiscover:
+        providers:
+          - type: kubernetes
+            node: ${NODE_NAME}
+            # Hints let a Pod tune its own collection through co.elastic.logs/*
+            # annotations; every other container gets default_config.
+            hints:
+              enabled: true
+              default_config:
+                type: filestream
+                # yamllint disable-line rule:line-length
+                id: kubernetes-container-logs-${data.kubernetes.pod.name}-${data.kubernetes.container.id}
+                paths:
+                  - /var/log/containers/*${data.kubernetes.container.id}.log
+                parsers:
+                  - container: {}
+                prospector:
+                  scanner:
+                    fingerprint.enabled: true
+                    # The default 1024 bytes holds back a quiet
+                    # container's log until it grows that large. 64
+                    # (the minimum) still covers each CRI line's
+                    # nanosecond timestamp, so files stay distinct.
+                    fingerprint.length: 64
+                    symlinks: true
+                file_identity.fingerprint: {}
+    processors:
+      # The backend logs pino JSON ({"level":30,"time":...,"msg":...}).
+      # Decode it under pino.* so its keys cannot collide with ECS fields.
+      - decode_json_fields:
+          when:
+            and:
+              - equals:
+                  kubernetes.namespace: webapp
+              - equals:
+                  kubernetes.labels.app_kubernetes_io/component:
+                    minishop-backend
+          fields: ["message"]
+          target: pino
+          max_depth: 2
+          # Non-JSON lines (the npm start banner) keep their message as is.
+          add_error_key: false
+      # The pino msg becomes the event message; the raw JSON is dropped only
+      # when decoding produced a msg.
+      - drop_fields:
+          when:
+            has_fields: ["pino.msg"]
+          fields: ["message"]
+      - rename:
+          when:
+            has_fields: ["pino.msg"]
+          fields:
+            - from: pino.msg
+              to: message
+          ignore_missing: true
+      # pino levels are numbers; ECS log.level is a name.
+      - script:
+          when:
+            has_fields: ["pino.level"]
+          lang: javascript
+          source: |
+            var names = {
+              10: "trace", 20: "debug", 30: "info",
+              40: "warn", 50: "error", 60: "fatal"
+            };
+            function process(event) {
+              var name = names[event.Get("pino.level")];
+              if (name) {
+                event.Put("log.level", name);
+              }
+            }
+    # The ILM policy is created by scripts/deploy-logging.sh before Filebeat
+    # starts; Filebeat only links its index template to it and never
+    # overwrites it.
+    setup.ilm.policy_name: minishop-logs
+    setup.ilm.check_exists: true
+    setup.ilm.overwrite: false
+    setup.template.settings:
+      index.number_of_shards: 1
+      # One node cannot hold a replica; 0 keeps the cluster green.
+      index.number_of_replicas: 0
+    logging.metrics.enabled: false
+  daemonSet:
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/part-of: minishop-logging
+      spec:
+        serviceAccountName: filebeat
+        # The autodiscover provider calls the Kubernetes API.
+        automountServiceAccountToken: true
+        terminationGracePeriodSeconds: 30
+        # Collect the control-plane node's containers too (ingress-nginx,
+        # API server).
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+        containers:
+          - name: filebeat
+            env:
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 300Mi
+            # Root is needed to read the root-owned node log files and to
+            # keep the registry in ECK's hostPath data volume. No
+            # capabilities and no privilege escalation.
+            securityContext:
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                  - ALL
+              readOnlyRootFilesystem: true
+              seccompProfile:
+                type: RuntimeDefault
+            volumeMounts:
+              - name: varlogcontainers
+                mountPath: /var/log/containers
+                readOnly: true
+              - name: varlogpods
+                mountPath: /var/log/pods
+                readOnly: true
+        # kind nodes run containerd: /var/log/containers links into
+        # /var/log/pods. There is no /var/lib/docker/containers to mount.
+        volumes:
+          - name: varlogcontainers
+            hostPath:
+              path: /var/log/containers
+              type: Directory
+          - name: varlogpods
+            hostPath:
+              path: /var/log/pods
+              type: Directory

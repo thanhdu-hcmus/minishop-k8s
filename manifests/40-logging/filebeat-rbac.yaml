@@ -1,0 +1,43 @@
+# Filebeat's Kubernetes autodiscover provider watches Pods, Namespaces and
+# Nodes to add metadata to each log line. Read-only, but cluster-wide: the
+# owner approves it at deploy time (ADR 0017).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: logging-filebeat
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - nodes
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: logging-filebeat
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: logging-filebeat
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    namespace: logging

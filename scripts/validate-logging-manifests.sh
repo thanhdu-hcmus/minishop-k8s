@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+#
+# Validate manifests/40-logging offline (Issue #59, ADR 0017). No cluster is
+# used.
+#   - kubeconform (strict) checks every document: core kinds against the
+#     Kubernetes schemas, and the Elasticsearch, Kibana and Beat resources
+#     against JSON schemas built from the pinned, checksum-verified ECK CRDs.
+#     Unknown fields fail, except where the CRD preserves them (podTemplate,
+#     config).
+#   - The ECK operator.yaml as deploy-eck.sh applies it (checksum-verified,
+#     image pinned by digest, namespaces set to logging) passes kubeconform,
+#     and its settings are checked.
+#   - Policy checks: one Elastic Stack version everywhere, every image pinned
+#     by digest, CPU and memory requests and limits on every container, the
+#     ILM policy deletes after 3d, Filebeat links to that policy, and
+#     Filebeat's API-server egress is TCP 6443 to LOGGING_API_CIDR only.
+#
+# Usage:
+#   bash scripts/validate-logging-manifests.sh
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=logging-lib.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/logging-lib.sh"
+
+case "${1:-}" in
+  '') ;;
+  -h | --help) sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 0 ;;
+  *) die "unknown option $1" ;;
+esac
+
+logging_require_commands curl docker python3 sha256sum
+readonly KUBECONFORM_IMAGE=ghcr.io/yannh/kubeconform:v0.6.7
+
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+mkdir "$work/schemas"
+logging_download crds.yaml "$ECK_CRDS_SHA256" "$work/crds.yaml"
+
+# Build kubeconform schemas ({kind}_{version}.json, lower case) from each CRD
+# version's openAPIV3Schema. Objects with declared properties reject unknown
+# ones, as the API server prunes them; preserve-unknown-fields stays open.
+python3 -I - "$work/crds.yaml" "$work/schemas" <<'PY'
+import json
+import os
+import sys
+
+import yaml
+
+
+def close(node):
+    if isinstance(node, dict):
+        if (
+            node.get("type") == "object"
+            and "properties" in node
+            and "additionalProperties" not in node
+            and not node.get("x-kubernetes-preserve-unknown-fields")
+        ):
+            node["additionalProperties"] = False
+        for value in node.values():
+            close(value)
+    elif isinstance(node, list):
+        for value in node:
+            close(value)
+
+
+count = 0
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for doc in yaml.safe_load_all(handle):
+        if not doc or doc.get("kind") != "CustomResourceDefinition":
+            continue
+        kind = doc["spec"]["names"]["kind"].lower()
+        for version in doc["spec"]["versions"]:
+            schema = version["schema"]["openAPIV3Schema"]
+            close(schema)
+            path = os.path.join(sys.argv[2], f"{kind}_{version['name']}.json")
+            with open(path, "w", encoding="utf-8") as out:
+                json.dump(schema, out)
+            count += 1
+if count == 0:
+    sys.exit("no CRD schemas found")
+print(f"Built {count} ECK CRD schemas")
+PY
+
+manifests=()
+for file in "$LOGGING_MANIFESTS"/*.yaml; do
+  manifests+=("/work/${file#"$LOGGING_REPO_ROOT"/}")
+done
+docker run --rm \
+  --volume "$LOGGING_REPO_ROOT:/work:ro" \
+  --volume "$work/schemas:/schemas:ro" \
+  "$KUBECONFORM_IMAGE" -summary -strict \
+  -schema-location default \
+  -schema-location '/schemas/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json' \
+  "${manifests[@]}"
+
+# The operator manifest exactly as deploy-eck.sh applies it: checksum-verified,
+# then patched (image digest, managed namespaces).
+mkdir "$work/eck"
+logging_download operator.yaml "$ECK_OPERATOR_SHA256" "$work/eck/operator.yaml"
+logging_patch_operator "$work/eck/operator.yaml"
+docker run --rm --volume "$work/eck:/eck:ro" "$KUBECONFORM_IMAGE" -summary -strict /eck/operator.yaml
+python3 -I - "$work/eck/operator.yaml" "$ECK_OPERATOR_IMAGE@$ECK_OPERATOR_DIGEST" \
+  "$LOGGING_NAMESPACE" <<'PY'
+import sys
+
+import yaml
+
+path, image, namespace = sys.argv[1:]
+docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
+config = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "elastic-operator")
+settings = yaml.safe_load(config["data"]["eck.yaml"])
+# Exactly the logging namespace (ECK adds its own namespace itself).
+wanted = [namespace]
+if settings.get("namespaces") != wanted:
+    sys.exit(f"FAIL: operator eck.yaml namespaces is {settings.get('namespaces')!r}, not {wanted!r}")
+operator = next(d for d in docs if d["kind"] == "StatefulSet")
+images = [c["image"] for c in operator["spec"]["template"]["spec"]["containers"]]
+if images != [image]:
+    sys.exit(f"FAIL: operator images {images!r}, not [{image!r}]")
+print(f"Patched operator.yaml: namespaces {wanted}, image pinned by digest.")
+PY
+
+python3 -I - "$LOGGING_MANIFESTS" "$LOGGING_ILM_POLICY" "$LOGGING_API_CIDR" <<'PY'
+import glob
+import json
+import os
+import re
+import sys
+
+import yaml
+
+directory, policy_name, api_cidr = sys.argv[1:4]
+errors = []
+docs = []
+for path in sorted(glob.glob(os.path.join(directory, "*.yaml"))):
+    with open(path, encoding="utf-8") as handle:
+        docs += [(os.path.basename(path), d) for d in yaml.safe_load_all(handle) if d]
+
+
+def pod_specs(doc):
+    spec = doc.get("spec", {})
+    kind = doc["kind"]
+    if kind == "Elasticsearch":
+        return [n.get("podTemplate", {}).get("spec", {}) for n in spec.get("nodeSets", [])]
+    if kind == "Kibana":
+        return [spec.get("podTemplate", {}).get("spec", {})]
+    if kind == "Beat":
+        return [spec.get("daemonSet", {}).get("podTemplate", {}).get("spec", {})]
+    return []
+
+
+stack = {}
+for name, doc in docs:
+    kind = doc["kind"]
+    if kind not in ("Elasticsearch", "Kibana", "Beat"):
+        continue
+    version = doc["spec"].get("version")
+    image = doc["spec"].get("image", "")
+    stack[f"{name}:{kind}"] = version
+    if not re.fullmatch(r"docker\.elastic\.co/[a-z/]+:" + re.escape(str(version)) + r"@sha256:[0-9a-f]{64}", image):
+        errors.append(f"{name} {kind}: image {image!r} is not {version} pinned by digest")
+    for pod in pod_specs(doc):
+        containers = pod.get("containers", [])
+        if not containers:
+            errors.append(f"{name} {kind}: podTemplate has no container settings")
+        for container in containers:
+            resources = container.get("resources", {})
+            for section in ("requests", "limits"):
+                for key in ("cpu", "memory"):
+                    if key not in resources.get(section, {}):
+                        errors.append(f"{name} {kind}/{container.get('name')}: no {section}.{key}")
+    if kind == "Beat":
+        config = doc["spec"].get("config", {})
+        if config.get("setup.ilm.policy_name") != policy_name:
+            errors.append(f"{name}: Filebeat setup.ilm.policy_name is not {policy_name}")
+        if config.get("setup.ilm.overwrite") is not False:
+            errors.append(f"{name}: Filebeat must not overwrite the ILM policy")
+
+if len(set(stack.values())) != 1:
+    errors.append(f"Elastic Stack versions differ: {stack}")
+
+# Filebeat's API-server egress: TCP 6443 only, only to the kind network.
+filebeat_policy = next(
+    (d for _, d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "filebeat"), None)
+api_rules = [r for r in (filebeat_policy or {}).get("spec", {}).get("egress", [])
+             if any(p.get("port") == 6443 for p in r.get("ports", []))]
+if len(api_rules) != 1:
+    errors.append(f"networkpolicy.yaml: expected one Filebeat egress rule for 6443, found {len(api_rules)}")
+else:
+    peers = api_rules[0].get("to", [])
+    ports = api_rules[0].get("ports", [])
+    if peers != [{"ipBlock": {"cidr": api_cidr}}] or ports != [{"protocol": "TCP", "port": 6443}]:
+        errors.append(f"networkpolicy.yaml: Filebeat 6443 egress must be TCP to ipBlock {api_cidr} only, "
+                      f"got to={peers} ports={ports}")
+
+with open(os.path.join(directory, "ilm-policy.json"), encoding="utf-8") as handle:
+    phases = json.load(handle)["policy"]["phases"]
+if phases.get("delete", {}).get("min_age") != "3d" or "delete" not in phases["delete"].get("actions", {}):
+    errors.append("ilm-policy.json: no delete action at min_age 3d")
+
+if errors:
+    print("\n".join("FAIL: " + e for e in errors), file=sys.stderr)
+    sys.exit(1)
+print(f"Policy checks passed: stack {next(iter(stack.values()))}, digests, resources, ILM, "
+      f"Filebeat API egress to {api_cidr}.")
+PY
+
+printf '%s\n' 'manifests/40-logging validates.'
