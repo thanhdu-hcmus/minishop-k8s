@@ -489,6 +489,72 @@ and losing the WSL disk loses them. Failures and fixes are in
 [troubleshooting](./troubleshooting.md); the drill is in the
 [Issue #40 record](./devlog/2026-11-09-data-backup-restore.md).
 
+## Rotate data passwords
+
+Issue #40 part 3 added `scripts/rotate-data-credentials.sh`. It rotates the
+PostgreSQL role `minishop` and the Redis password, and updates both Secrets,
+`data/minishop-data-credentials` and `webapp/minishop-app-credentials` (keys
+`postgres-password` and `redis-password`), together. The design is in
+[ADR 0015](./decisions/0015-data-credential-rotation.md) (proposed). It does
+not touch the legacy `webapp/postgres-app-creds`, `data/postgres-creds`, or
+the CNPG cluster `minishop-postgres`; those go away at
+[runbook step 6](./legacy-retirement-runbook.md).
+
+Run it from WSL on an up-to-date `main` (a stale checkout has already once
+redeployed an old image):
+
+```bash
+bash scripts/backup-data.sh                                    # 1. fresh backup
+bash scripts/rotate-data-credentials.sh --context kind-learn   # 2. dry run; review the plan
+bash scripts/rotate-data-credentials.sh --context kind-learn --apply   # 3. rotate
+bash scripts/validate-app.sh                                   # 4. check the app
+```
+
+- The default is a dry run; only `--apply` changes anything. `--context` is
+  required; there is no default. `--only postgresql|redis` rotates one
+  component; the default rotates both.
+- Order: `ALTER ROLE` (over the container's trusted local socket, with
+  statement logging off for that session), the data Secret, the app Secret, a
+  rolling restart of the Redis StatefulSet, a rolling restart of the backend,
+  then verification. The PostgreSQL StatefulSet is not restarted.
+- Expect failed requests from `ALTER ROLE` until the backend rollout
+  completes, measured at ~39 s in the self-test (2 backend replicas; kind-learn
+  runs at least 3, so expect longer). Old backend Pods cannot open new
+  connections and go NotReady once Redis restarts; requests on pooled
+  PostgreSQL connections keep working. The script prints the measured window
+  as `client window:`. This is an owner decision; there are no dual roles.
+- `--apply` holds a lock on `<state-dir>/.lock` (default
+  `~/.local/state/minishop-rotation`), so only one rotation or recovery runs
+  at a time. A Secret changed by someone else after the checks makes the
+  patch fail with 409 Conflict, and the script rolls back.
+- Verification: the new passwords log in, the old ones are rejected, the Redis
+  keys without a TTL are unchanged, and every new backend Pod answers 200 on
+  `/ready`, `/items` and `/items/<i>/reviews`.
+- Passwords are 64 hex characters. They pass only through stdin and mode-600
+  `mktemp` files and are never printed.
+- Pre-flight refusals: no `--context`; no backup of the same target in the last
+  24 hours (`--skip-backup-check` overrides); the two Secrets disagree; the
+  current password does not log in; the backend is unhealthy; a running Job
+  reads the Secrets. See [troubleshooting](./troubleshooting.md).
+- On failure it rolls back automatically and prints the state of each
+  component. If the rollback also fails it prints `!!! ROLLBACK INCOMPLETE.`
+  and a `--recover DIR --to old|new` command; run it, and re-run it until it
+  succeeds.
+- Afterwards, update or discard any stored `MINISHOP_*_PASSWORD` values.
+  Re-running `scripts/create-{data,app}-credentials.sh` with old values, either
+  directly, through `deploy-data.sh`, or through `deploy-kustomize-dev.sh` with
+  the password variables set, reverts the rotation. `helm upgrade` does not:
+  the chart only references the Secrets by name.
+
+Test the script on a throwaway kind cluster (`minishop-rotation-test`, deleted
+on exit); it never touches kind-learn:
+
+```bash
+bash scripts/test-data-rotation.sh
+```
+
+The run is in the [rotation record](./devlog/2026-11-10-credential-rotation.md).
+
 ## Scoped cleanup
 
 Choose cleanup matching the active packaging path. These commands delete

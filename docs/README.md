@@ -44,3 +44,5 @@ scoped cleanup.
 38. [Seed Job decision](./decisions/0014-seed-job-replaces-upload.md) — proposed T2 decision to remove `POST /upload` and seed through an opt-in, idempotent chart Job rather than a Helm hook.
 39. [Seed Job record](./devlog/2026-11-10-seed-job.md) — Issue #40 part 2 seed command, `/upload` removal, seed Job, `validate-app.sh` guard, and throwaway-cluster verification.
 40. [Seed image pin record](./devlog/2026-11-10-seed-image-pin.md) — Issue #40 follow-up pinning the #55 backend image `b0c282b0...`, which serves no `/upload` and ships `seed.js`.
+41. [Data credential rotation decision](./decisions/0015-data-credential-rotation.md) — proposed T2 decision to rotate the role and both Secrets together with a short auth gap instead of dual roles, Redis restarted before the backend, PostgreSQL not restarted, and legacy Secrets scoped out.
+42. [Data credential rotation record](./devlog/2026-11-10-credential-rotation.md) — Issue #40 part 3 `rotate-data-credentials.sh` and `test-data-rotation.sh`, throwaway-cluster verification, and the Secret-exposure incident during discovery.
