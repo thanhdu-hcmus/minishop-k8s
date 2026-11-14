@@ -364,6 +364,19 @@ Expected result: the diagnosis identifies the failing layer and the next run adv
   or unset the stored `MINISHOP_*_PASSWORD` values, then rotate again with
   `scripts/rotate-data-credentials.sh`; if the Secrets now disagree, the
   pre-flight refuses until they are made consistent.
+- **Symptom:** a new client (debug Pod, Job, another service) cannot reach
+  `minishop-postgresql` on 5432 or `minishop-redis` on 6379; the connection
+  times out rather than being refused, while the backend works. **Cause:**
+  NetworkPolicies `minishop-postgresql` and `minishop-redis` in `data`
+  (Issue #40, [ADR 0016](./decisions/0016-data-tier-network-policy.md)) drop
+  SYNs from any peer that is not a Pod in `webapp` with the backend labels
+  (or the seed Job). A timeout, not a refusal, is the sign of a policy drop;
+  the same labels in another namespace are also denied. **Fix:** run the
+  client in `webapp` with labels `app.kubernetes.io/component=minishop-backend`
+  and `app.kubernetes.io/name=minishop` only if it really is the backend;
+  otherwise add an explicit peer to `charts/minishop/templates/networkpolicy.yaml`.
+  For one-off data work, use `kubectl exec` into the data Pod, as the backup
+  and rotation scripts do.
 
 ## Try It Yourself
 - Make a temporary Draft PR with a non-trivial change and no devlog; confirm the `ci` job reaches the devlog gate after earlier checks pass.
