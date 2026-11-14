@@ -72,8 +72,8 @@ probes from existing Pods only. Nothing was created, applied, or deleted.
     operator and replication traffic. No namespace-wide default-deny.
   - Ingress: TCP 5432 / 6379 only from peers with `namespaceSelector`
     `kubernetes.io/metadata.name=webapp` AND `podSelector` backend
-    (`component=minishop-backend, name=minishop`, the Deployment selector) in
-    one entry; the seed Job peer (`component=seed, name=minishop,
+    (`component=minishop-backend, name=minishop`, the Deployment selector;
+    `part-of=minishop` added in the review fix pass below) in one entry; the seed Job peer (`component=seed, name=minishop,
     part-of=minishop`) is added only while `seed.enabled`.
   - Egress: `policyTypes` includes `Egress` with no rules, so the data Pods
     cannot open connections. A deviation from the recommended ingress-only
@@ -87,6 +87,11 @@ probes from existing Pods only. Nothing was created, applied, or deleted.
     peers without a namespaceSelector, found 2"), the seed peer rendered
     unconditionally, and `Egress` removed from `policyTypes`. Default renders outside the two new
     documents are unchanged against `origin/main` (0 removed lines).
+- `ae86ea6` test(scripts): `scripts/test-data-network-policy.sh` builds a
+  throwaway kind cluster `minishop-netpol-test` (control plane and two
+  workers, node image from `cluster/kind-config.yaml`, own kubeconfig in a
+  `mktemp -d` directory, deleted on exit) and checks every allowed and denied
+  path listed under Verification.
 
 ## Problems and fixes
 - **Test harness: stale Redis Pod IP after rotation.** First run of
@@ -101,12 +106,6 @@ probes from existing Pods only. Nothing was created, applied, or deleted.
   Fix: the throwaway cluster has two workers and the client Pods are pinned,
   after the data Pods are placed, half to PostgreSQL's node and half to the
   other worker.
-
-- `ae86ea6` test(scripts): `scripts/test-data-network-policy.sh` builds a
-  throwaway kind cluster `minishop-netpol-test` (control plane and two
-  workers, node image from `cluster/kind-config.yaml`, own kubeconfig in a
-  `mktemp -d` directory, deleted on exit) and checks every allowed and denied
-  path listed under Verification.
 
 ## Verification
 - `bash scripts/validate-helm.sh`: lint and kubeconform pass for defaults,
@@ -146,6 +145,45 @@ probes from existing Pods only. Nothing was created, applied, or deleted.
   is a single run on a different cluster and is not compared further.
 - `git diff --check` is clean; no CRLF in changed files.
 
+## Review fixes (one pass, no Blockers)
+- `6be5ff3` fix(chart): the backend peer also requires
+  `app.kubernetes.io/part-of=minishop`, the backend Pod template's full label
+  set. A read-only `kubectl get pods --show-labels` in `webapp` on kind-learn
+  showed all three live backends carry it. `validate-helm.sh` now also asserts
+  every peer's `name=minishop` and `part-of=minishop` labels, exactly one
+  `from` rule per policy, and no other rule-level list item. Mutations caught:
+  an empty allow-all rule (`expected 6 rule-level list items ..., found 8`),
+  `part-of` removed, and `name` removed from the backend peer. ADR 0016 and
+  troubleshooting list the label.
+- `dd74b80` docs(operator): the verify and proof commands use
+  `KUBECONFIG=./.kube/config kubectl --context kind-learn`, look up the
+  PostgreSQL Pod IP, and print `rc=` (0 connected, 124 timed out).
+- test(scripts) on `test-data-network-policy.sh`:
+  - kindnet logs are captured before `grep -q`, avoiding SIGPIPE under
+    `pipefail`;
+  - the `Unhealthy` event check covers only `minishop-postgresql-0` and
+    `minishop-redis-0` (`involvedObject.name`), not the legacy stand-in;
+  - the rotated passwords are read from a new backend Pod's environment into
+    private files after the rotation; the final scan covers initial and
+    rotated passwords (8 patterns), and a log printed on failure is checked
+    first and withheld if it holds a known password. Limit, stated in the
+    header: if the rotation itself fails, its new passwords are unknown, so
+    its log is checked against the initial ones only;
+  - the cross-namespace impostor carries the full backend label set;
+  - git mode set to 100755.
+- Re-verification:
+  - `bash scripts/validate-helm.sh`: passes (17 resources by default, 19 with
+    the seed).
+  - ShellCheck v0.10.0 (Docker) clean on both scripts; `bash -n` clean;
+    `git diff --check` clean; no CRLF.
+  - Full `bash scripts/test-data-network-policy.sh` rerun: **not completed.**
+    It created the cluster and passed the kindnet check, then Claude Code
+    stopped it while it waited for the data stack because the host was
+    critically low on memory. The exit trap deleted the cluster (`kind get
+    clusters` shows only `learn`). Per the stop notice it was not restarted
+    without the owner. The last full pass is the 379 s run above, on the
+    chart before `part-of` was added and the script before these fixes.
+
 ## Not deployed; known gaps
 - kind-learn is unchanged. The live rollout is the owner's: the usual
   `bash scripts/deploy-helm.sh <values file>` adds the two policies; nothing
@@ -169,11 +207,11 @@ probes from existing Pods only. Nothing was created, applied, or deleted.
   proof above.
 
 ## Minor notes
-- Git records `scripts/test-data-network-policy.sh` as mode 100644; run it
-  with `bash`.
 - ShellCheck ran through the `koalaman/shellcheck:v0.10.0` Docker image.
 
 ## Follow-ups
+- Rerun `bash scripts/test-data-network-policy.sh` in full on the final
+  commits once the host has memory to spare, and record the result here.
 - Owner: deploy, then verify and prove the denial as in the
   [operator guide](../minishop-operator-guide.md#data-network-policy); record
   the result here or in a follow-up record.
