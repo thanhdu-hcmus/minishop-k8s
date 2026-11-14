@@ -70,4 +70,46 @@ if helm_cli_for_minishop template minishop /chart --namespace webapp \
   exit 1
 fi
 
+# The data-tier NetworkPolicies (#40) render by default. Each selects only the
+# chart's data Pods, denies all egress, and admits peers that match both the
+# webapp namespace and a MiniShop pod label set in one `from` entry; the seed
+# peer appears only with seed.enabled.
+data_policies() { # extra helm arguments
+  helm_cli_for_minishop template minishop /chart --namespace webapp \
+    --show-only templates/networkpolicy.yaml "$@" |
+    awk 'BEGIN { RS = "\n---\n" } /\n  namespace: data\n/ { print "---"; print }'
+}
+
+expect_count() { # description expected-count extended-regex text
+  local found
+  found=$(grep -Ec -- "$3" <<<"$4" || true)
+  if [[ "$found" != "$2" ]]; then
+    printf 'Data NetworkPolicies: expected %s %s, found %s.\n' "$2" "$1" "$found" >&2
+    exit 1
+  fi
+}
+
+for seed in false true; do
+  rendered_data=$(data_policies --set "seed.enabled=$seed")
+  peers=1
+  [[ "$seed" == true ]] && peers=2
+  expect_count "data-namespace policies (seed=$seed)" 2 '^kind: NetworkPolicy$' "$rendered_data"
+  expect_count "minishop-postgresql policies" 1 '^  name: minishop-postgresql$' "$rendered_data"
+  expect_count "minishop-redis policies" 1 '^  name: minishop-redis$' "$rendered_data"
+  expect_count "PostgreSQL Pod selectors" 1 '^      app.kubernetes.io/name: minishop-postgresql$' "$rendered_data"
+  expect_count "Redis Pod selectors" 1 '^      app.kubernetes.io/name: minishop-redis$' "$rendered_data"
+  expect_count "Egress policy types" 2 '^    - Egress$' "$rendered_data"
+  expect_count "egress rules" 0 '^  egress:' "$rendered_data"
+  expect_count "port 5432 rules" 1 '^          port: 5432$' "$rendered_data"
+  expect_count "port 6379 rules" 1 '^          port: 6379$' "$rendered_data"
+  expect_count "namespace-scoped peers (seed=$seed)" $((2 * peers)) \
+    '^        - namespaceSelector:$' "$rendered_data"
+  expect_count "webapp namespace selectors (seed=$seed)" $((2 * peers)) \
+    '^              kubernetes.io/metadata.name: webapp$' "$rendered_data"
+  expect_count "peers without a namespaceSelector" 0 '^ +- (podSelector|ipBlock):' "$rendered_data"
+  expect_count "backend peers" 2 '^              app.kubernetes.io/component: minishop-backend$' "$rendered_data"
+  expect_count "seed peers (seed=$seed)" $((2 * (peers - 1))) \
+    '^              app.kubernetes.io/component: seed$' "$rendered_data"
+done
+
 printf '%s\n' 'Helm defaults, dev, prod, and seed values lint, render, and pass schema validation.'
