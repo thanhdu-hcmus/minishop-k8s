@@ -77,5 +77,5 @@ logging_wait_health beat "$LOGGING_BEAT_NAME" "$timeout" green
 
 printf '%s\n' "Logging stack is deployed in context $LOGGING_CONTEXT." \
   "Check it with: bash scripts/validate-logging.sh" \
-  "Kibana: kubectl -n $LOGGING_NAMESPACE port-forward service/${LOGGING_KIBANA_NAME}-kb-http 5601," \
+  "Kibana: kubectl --kubeconfig $LOGGING_KUBECONFIG --context $LOGGING_CONTEXT -n $LOGGING_NAMESPACE port-forward service/${LOGGING_KIBANA_NAME}-kb-http 5601," \
   "then https://localhost:5601 as user elastic (see the operator guide for the password)."

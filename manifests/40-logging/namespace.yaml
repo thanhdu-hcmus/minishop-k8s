@@ -7,4 +7,8 @@ metadata:
     # Filebeat reads node log files through hostPath volumes as root, which
     # the baseline and restricted Pod Security levels reject (ADR 0017). The
     # exception is stated here instead of relying on the cluster default.
+    # warn and audit at baseline keep any other Pod that would need the
+    # exception visible (kubectl warnings and audit annotations).
     pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline

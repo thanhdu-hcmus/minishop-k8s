@@ -136,7 +136,8 @@ the deploy separately.
     `/var/log/containers` and `/var/log/pods`, plus ECK's writable hostPath
     `/var/lib/logging/filebeat/filebeat-data` for its registry, and the
     `logging` namespace labelled `pod-security.kubernetes.io/enforce:
-    privileged` for that.
+    privileged` for that, with `warn` and `audit` at `baseline` so the
+    exception stays visible.
 
 ## Rationale
 ECK is Elastic's supported way to run the stack on Kubernetes and turns TLS,
