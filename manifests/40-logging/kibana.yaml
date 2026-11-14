@@ -1,0 +1,49 @@
+# Kibana managed by ECK (ADR 0017), reached only through
+# `kubectl port-forward`; there is no Ingress or LoadBalancer.
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: logging
+  namespace: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+spec:
+  version: 9.4.9
+  # Same version, pinned by multi-arch index digest.
+  # yamllint disable-line rule:line-length
+  image: docker.elastic.co/kibana/kibana:9.4.9@sha256:6288bf856fe313dba9c5e1175f24057b9f8ead71837dd1e62b33f12fdea8773d
+  count: 1
+  elasticsearchRef:
+    name: logging
+  config:
+    # The NetworkPolicy blocks internet egress; turn off the features that
+    # would try it.
+    telemetry.optIn: false
+    telemetry.allowChangingOptInStatus: false
+    newsfeed.enabled: false
+  podTemplate:
+    metadata:
+      annotations:
+        # ECK sets co.elastic.logs/module for its own log module. That
+        # module's hint clashes with Filebeat's default_config (duplicate
+        # input IDs, two parsers), so no log is collected. Empty selects
+        # default_config.
+        co.elastic.logs/module: ""
+      labels:
+        app.kubernetes.io/part-of: minishop-logging
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: kibana
+          env:
+            # Heap cap. test-logging.sh measured a 913 MiB working set at idle
+            # with it (2026-11-14), so the limit is 1536Mi, not ECK's 1Gi.
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=700"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1536Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi

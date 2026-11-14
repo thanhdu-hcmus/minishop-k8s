@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    app.kubernetes.io/part-of: minishop-logging
+    # Filebeat reads node log files through hostPath volumes as root, which
+    # the baseline and restricted Pod Security levels reject (ADR 0017). The
+    # exception is stated here instead of relying on the cluster default.
+    pod-security.kubernetes.io/enforce: privileged
