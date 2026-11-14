@@ -158,3 +158,27 @@ probes from existing Pods only. Nothing was created, applied, or deleted.
   the deployed path.
 - No HA: a future PostgreSQL or Redis replica would need its own ingress and
   egress rules for replication.
+
+## Decisions
+- [ADR 0016: Data-tier NetworkPolicy](../decisions/0016-data-tier-network-policy.md)
+  (proposed): pod-selected scope, no namespace deny, legacy untouched, egress
+  denied, label-based trust, no toggle.
+- [ADR 0006](../decisions/0006-application-network-boundary.md) and
+  [validation results](../validation-results.md) carry dated notes that the
+  2026-09 "kindnet does not enforce" statement is superseded by the read-only
+  proof above.
+
+## Minor notes
+- Git records `scripts/test-data-network-policy.sh` as mode 100644; run it
+  with `bash`.
+- ShellCheck ran through the `koalaman/shellcheck:v0.10.0` Docker image.
+
+## Follow-ups
+- Owner: deploy, then verify and prove the denial as in the
+  [operator guide](../minishop-operator-guide.md#data-network-policy); record
+  the result here or in a follow-up record.
+- Data policies for the raw `manifests/` and Kustomize paths, if those paths
+  stay supported.
+- Restrict who can create Pods in `webapp` (RBAC), since trust is label-based.
+- Replication rules if PostgreSQL or Redis gains a replica.
+- Owner accepts ADR 0016 (status proposed).
