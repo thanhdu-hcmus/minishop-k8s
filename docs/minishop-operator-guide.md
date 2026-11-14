@@ -555,6 +555,51 @@ bash scripts/test-data-rotation.sh
 
 The run is in the [rotation record](./devlog/2026-11-10-credential-rotation.md).
 
+## Data network policy
+
+The chart renders NetworkPolicies `minishop-postgresql` and `minishop-redis`
+in `data` ([ADR 0016](./decisions/0016-data-tier-network-policy.md)). They
+admit TCP 5432 / 6379 only from Pods in `webapp` labelled
+`app.kubernetes.io/component=minishop-backend, app.kubernetes.io/name=minishop,
+app.kubernetes.io/part-of=minishop` (plus the seed Job while `seed.enabled`), and deny all egress from the two
+data Pods. The legacy `redis-0` and CNPG Pods are not selected. There is no
+toggle.
+
+Deploy from an up-to-date `main` (adds the two policies; no Pod restarts):
+
+```bash
+PATH="$PWD/.tools/bin:$PATH" bash scripts/deploy-helm.sh values-dev.yaml
+```
+
+Verify:
+
+```bash
+bash scripts/validate-app.sh
+KUBECONFIG=./.kube/config kubectl --context kind-learn -n data get networkpolicy
+```
+
+Optional proof from the legacy `redis-0`, which has no backend labels. It
+connects before the deploy (`rc=0`) and times out after (`rc=124`):
+
+```bash
+pg_ip=$(KUBECONFIG=./.kube/config kubectl --context kind-learn -n data \
+  get pod minishop-postgresql-0 -o jsonpath='{.status.podIP}')
+KUBECONFIG=./.kube/config kubectl --context kind-learn -n data exec redis-0 -c redis -- \
+  timeout 4 bash -c "exec 3<>/dev/tcp/$pg_ip/5432"; echo "rc=$?"
+```
+
+Optionally run `bash scripts/backup-data.sh --context <ctx>` to confirm the
+data tools still work; they use `kubectl exec` and are not affected.
+
+Roll back with `helm rollback minishop <previous revision> -n webapp`, or
+delete the two policies in `data`.
+
+Test on a throwaway kind cluster (`minishop-netpol-test`, deleted on exit):
+
+```bash
+bash scripts/test-data-network-policy.sh
+```
+
 ## Scoped cleanup
 
 Choose cleanup matching the active packaging path. These commands delete

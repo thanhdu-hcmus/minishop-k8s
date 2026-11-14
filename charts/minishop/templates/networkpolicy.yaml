@@ -116,3 +116,79 @@ spec:
           port: 53
         - protocol: UDP
           port: 53
+{{- /*
+Data tier (#40). Each policy selects only the chart's own StatefulSet Pods, so
+other Pods in data (the legacy redis-0 and the CNPG minishop-postgres-*
+instances, until docs/legacy-retirement-runbook.md retires them) stay
+unselected and keep their current access. There is deliberately no
+namespace-wide default-deny in data.
+
+Ingress: only the MiniShop backend, and the seed Job while seed.enabled, in
+webapp. namespaceSelector and podSelector sit in the same `from` entry, so a
+peer must match both; Pods with the same labels in another namespace are
+denied.
+Egress: none. PostgreSQL and Redis never open connections; their probes are
+exec probes, and backup, restore, and rotation run through `kubectl exec`.
+Their in-Pod checks (psql to the Pod's own IP, Redis REPLICAOF 127.0.0.1) stay
+inside the Pod's network namespace, which NetworkPolicy does not filter.
+*/}}
+{{- define "minishop.dataClients" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: webapp
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: minishop-backend
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/part-of: minishop
+{{- if .Values.seed.enabled }}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: webapp
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: seed
+      app.kubernetes.io/name: minishop
+      app.kubernetes.io/part-of: minishop
+{{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minishop-postgresql
+  namespace: data
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: database
+      app.kubernetes.io/name: minishop-postgresql
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- include "minishop.dataClients" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minishop-redis
+  namespace: data
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: cache
+      app.kubernetes.io/name: minishop-redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- include "minishop.dataClients" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 6379

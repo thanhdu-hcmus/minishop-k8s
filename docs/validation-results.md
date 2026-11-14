@@ -360,3 +360,13 @@ temporary policies' presence does not establish enforcement behavior.
 > cluster (`kindest/node:v1.30.13`), default-deny was enforced: without
 > NetworkPolicy `minishop-seed` the seed Job timed out, and with it the Job
 > succeeded. See the [seed Job record](./devlog/2026-11-10-seed-job.md).
+
+> **Superseded (Issue #40, 2026-11-14):** kindnet enforces NetworkPolicy on
+> kind-learn. Read-only check: kindnet `kindest/kindnetd:v20250512-df8de77b`
+> logs `Starting controller name="kube-network-policies"` in all 4 Pods.
+> `kubectl exec` TCP probes from existing Pods: backend to
+> `minishop-postgresql-0:5432` and `minishop-redis-0:6379` OPEN; backend to
+> legacy `redis-0:6379` and to another backend `:3001` TIMEOUT; legacy
+> `redis-0` to each backend `:3001` TIMEOUT. Prometheus kept 3/3 backend
+> targets up. See the
+> [data network policy record](./devlog/2026-11-14-data-network-policy.md).
