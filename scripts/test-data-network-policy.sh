@@ -27,6 +27,15 @@
 #         them back closes them again, so the policies cause the denials;
 #       - no password appears in any output.
 #       --keep-cluster leaves the cluster for inspection.
+#
+# Password handling: the initial passwords are generated here, and the
+# rotated ones are read after the rotation from a new backend Pod's
+# environment into private files (never printed). Every log of a called
+# script is checked against both, plain and base64, at the end, and a log
+# printed on failure is checked first and withheld if it holds one. Limit: if
+# the rotation itself fails, its new passwords are unknown here, so its log
+# is checked against the initial ones only (the rotation script redacts its
+# own output). This script's own output holds only names, IPs and results.
 
 set -euo pipefail
 # Tracing would print commands that handle password files.
@@ -70,6 +79,9 @@ scratch=$(mktemp -d)
 kc="$scratch/kubeconfig"
 logs="$scratch/logs"
 mkdir -m 700 "$logs" "$scratch/creds" "$scratch/backups"
+# Known passwords, plain and base64, one per line (grep -F -f patterns).
+patterns="$scratch/patterns"
+: >"$patterns"
 cluster_created=false
 
 cleanup() {
@@ -91,6 +103,26 @@ pass() { printf 'PASS: %s\n' "$*"; }
 pod_ip() { k -n "$1" get pod "$2" -o 'jsonpath={.status.podIP}'; }
 pod_node() { k -n "$1" get pod "$2" -o 'jsonpath={.spec.nodeName}'; }
 
+# add_patterns FILE...: record each password file, plain and base64. An
+# empty file would add an empty pattern that matches everything, so refuse it.
+add_patterns() {
+  local file
+  for file in "$@"; do
+    [[ -s "$file" ]] || die "empty password file ${file##*/}"
+    { cat "$file"; echo; base64 -w0 <"$file"; echo; } >>"$patterns"
+  done
+}
+
+# show_log LOG: print a called script's log to stderr on failure, unless it
+# holds a known password.
+show_log() {
+  if [[ -s "$patterns" ]] && grep -qF -f "$patterns" "$1"; then
+    printf 'Not printing log %s: it contains a password.\n' "${1##*/}" >&2
+  else
+    cat "$1" >&2
+  fi
+}
+
 # --- Throwaway cluster: two workers, so traffic also crosses nodes -------------------
 if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   die "a kind cluster named $CLUSTER exists, maybe from an interrupted run; delete it with kind delete cluster --name $CLUSTER"
@@ -109,7 +141,7 @@ YAML
 printf 'Creating kind cluster %s (kubeconfig in a scratch directory)\n' "$CLUSTER"
 cluster_created=true
 kind create cluster --name "$CLUSTER" --config "$scratch/kind.yaml" --kubeconfig "$kc" --wait 180s \
-  >"$logs/kind" 2>&1 || { cat "$logs/kind" >&2; die "kind create cluster failed"; }
+  >"$logs/kind" 2>&1 || { show_log "$logs/kind"; die "kind create cluster failed"; }
 if k get node "$LIVE_NODE" >/dev/null 2>&1; then
   die "the test cluster has the kind-learn node $LIVE_NODE; stopping"
 fi
@@ -117,7 +149,9 @@ kindnet_image=$(k -n kube-system get daemonset kindnet -o 'jsonpath={.spec.templ
 k -n kube-system rollout status daemonset/kindnet --timeout=180s >/dev/null
 policy_controllers=0
 for pod in $(k -n kube-system get pods -l app=kindnet -o name); do
-  if k -n kube-system logs "$pod" 2>/dev/null | grep -q 'Starting controller.*kube-network-policies'; then
+  # Captured first: grep -q exiting early would SIGPIPE kubectl under pipefail.
+  kindnet_log=$(k -n kube-system logs "$pod" 2>/dev/null) || kindnet_log=""
+  if grep -q 'Starting controller.*kube-network-policies' <<<"$kindnet_log"; then
     policy_controllers=$((policy_controllers + 1))
   fi
 done
@@ -129,6 +163,7 @@ k -n webapp create serviceaccount minishop-backend >/dev/null
 for key in postgres-password redis-password; do
   head -c 36 /dev/urandom | base64 -w0 >"$scratch/creds/$key"
 done
+add_patterns "$scratch/creds/postgres-password" "$scratch/creds/redis-password"
 for ns_secret in data/minishop-data-credentials webapp/minishop-app-credentials; do
   k -n "${ns_secret%/*}" create secret generic "${ns_secret#*/}" \
     --from-file=postgres-password="$scratch/creds/postgres-password" \
@@ -200,7 +235,8 @@ YAML
 }
 readonly PLAIN_LABELS='    app.kubernetes.io/name: netpol-probe'
 readonly BACKEND_LABELS='    app.kubernetes.io/component: minishop-backend
-    app.kubernetes.io/name: minishop'
+    app.kubernetes.io/name: minishop
+    app.kubernetes.io/part-of: minishop'
 {
   probe_pod webapp plain "$OTHER_NODE" "$PLAIN_LABELS"
   probe_pod "$OTHER_NS" plain "$PG_NODE" "$PLAIN_LABELS"
@@ -382,32 +418,48 @@ restarts=$(k -n data get pods -l 'app.kubernetes.io/name in (minishop-postgresql
   -o 'jsonpath={range .items[*]}{.status.containerStatuses[0].ready} {.status.containerStatuses[0].restartCount}{"\n"}{end}' |
   sort -u)
 [[ "$restarts" == "true 0" ]] || die "data containers not all ready with 0 restarts: $(tr '\n' ' ' <<<"$restarts")"
-unhealthy=$(k -n data get events --field-selector reason=Unhealthy -o name | wc -l)
-[[ "$unhealthy" -eq 0 ]] || die "$unhealthy Unhealthy probe events in data"
+# Only the chart's data Pods; the legacy stand-in's own probe is not checked.
+unhealthy=0
+for pod in minishop-postgresql-0 minishop-redis-0; do
+  count=$(k -n data get events --field-selector "reason=Unhealthy,involvedObject.name=$pod" -o name | wc -l)
+  unhealthy=$((unhealthy + count))
+done
+[[ "$unhealthy" -eq 0 ]] || die "$unhealthy Unhealthy probe events on the data Pods"
 pass "the data Pods are Ready with no container restarts and no failed probes"
 
 # --- The exec-based data tools -------------------------------------------------------------------
 bash "$SCRIPT_DIR/backup-data.sh" --kubeconfig "$kc" --context "$CONTEXT" \
-  --backup-dir "$scratch/backups" >"$logs/backup" 2>&1 || { cat "$logs/backup" >&2; die "backup failed"; }
-grep -q '^Backup .* complete' "$logs/backup" || { cat "$logs/backup" >&2; die "backup did not report completion"; }
+  --backup-dir "$scratch/backups" >"$logs/backup" 2>&1 || { show_log "$logs/backup"; die "backup failed"; }
+grep -q '^Backup .* complete' "$logs/backup" || { show_log "$logs/backup"; die "backup did not report completion"; }
 pass "backup-data.sh completed"
 set_dir=$(find "$scratch/backups" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended \
   -regex '.*/[0-9]{8}T[0-9]{6}Z$' | head -n 1)
 [[ -n "$set_dir" ]] || die "no backup set found"
 bash "$SCRIPT_DIR/restore-data.sh" --from "$set_dir" --kubeconfig "$kc" --context "$CONTEXT" \
-  >"$logs/restore" 2>&1 || { cat "$logs/restore" >&2; die "restore failed"; }
-grep -q '^Restore of .* complete' "$logs/restore" || { cat "$logs/restore" >&2; die "restore did not report completion"; }
+  >"$logs/restore" 2>&1 || { show_log "$logs/restore"; die "restore failed"; }
+grep -q '^Restore of .* complete' "$logs/restore" || { show_log "$logs/restore"; die "restore did not report completion"; }
 pass "restore-data.sh completed (pg_restore and the Redis REPLICAOF 127.0.0.1 sync)"
 bash "$SCRIPT_DIR/rotate-data-credentials.sh" --kubeconfig "$kc" --context "$CONTEXT" \
   --state-dir "$scratch/state" --backup-dir "$scratch/backups" --apply >"$logs/rotate" 2>&1 ||
-  { cat "$logs/rotate" >&2; die "rotation failed"; }
+  { show_log "$logs/rotate"; die "rotation failed"; }
+k -n webapp rollout status deployment/minishop-backend --timeout=300s >/dev/null
+# The rotated passwords, from a new backend Pod's environment into private
+# files, so the leak checks cover them too. Nothing is printed.
+for var_key in POSTGRES_PASSWORD:postgres-password REDIS_PASSWORD:redis-password; do
+  k -n webapp exec deployment/minishop-backend -c backend -- \
+    node -e 'process.stdout.write(process.env[process.argv[1]] || "")' "${var_key%%:*}" \
+    >"$scratch/creds/rotated-${var_key#*:}" 2>/dev/null || die "could not read the rotated ${var_key#*:}"
+  if cmp -s "$scratch/creds/rotated-${var_key#*:}" "$scratch/creds/${var_key#*:}"; then
+    die "the backend still has the initial ${var_key#*:}"
+  fi
+done
+add_patterns "$scratch/creds/rotated-postgres-password" "$scratch/creds/rotated-redis-password"
 for line in 'ok: postgresql: the new password logs in, the previous one is rejected' \
   'ok: redis: the new password logs in, the previous one is rejected' '/items 200' 'Rotation complete'; do
-  grep -qF "$line" "$logs/rotate" || { cat "$logs/rotate" >&2; die "missing from the rotation output: $line"; }
+  grep -qF "$line" "$logs/rotate" || { show_log "$logs/rotate"; die "missing from the rotation output: $line"; }
 done
 pass "rotate-data-credentials.sh completed (TCP login to the Pod IP, backend /items check)"
 
-k -n webapp rollout status deployment/minishop-backend --timeout=300s >/dev/null
 reads=$(backend_reads deployment/minishop-backend)
 [[ "$reads" =~ ^ready=200\ items=200\ count=[1-9][0-9]*\ reviews=200$ ]] || die "after rotation: $reads"
 pass "after the rotation the new backend Pods still read items and reviews: $reads"
@@ -436,13 +488,9 @@ check_denied
 pass "deleting the two data policies opens the denied paths; applying them closes them"
 
 # --- No password in any output -------------------------------------------------------------------
-patterns="$scratch/patterns"
-for file in "$scratch/creds"/*; do
-  cat "$file"; echo
-  base64 -w0 <"$file"; echo
-done >"$patterns"
+[[ "$(wc -l <"$patterns")" -eq 8 ]] || die "expected 4 known passwords (8 patterns), found $(wc -l <"$patterns") patterns"
 if grep -rlF -f "$patterns" "$logs" >"$scratch/leaks"; then
   die "a password appears in: $(tr '\n' ' ' <"$scratch/leaks")"
 fi
-pass "no initial password, in plain or base64 form, appears in any output"
+pass "no initial or rotated password, in plain or base64 form, appears in any log"
 printf 'All data NetworkPolicy tests passed.\n'
